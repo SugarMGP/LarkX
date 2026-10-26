@@ -213,6 +213,16 @@ def test_attachment_name_decodes_percent_encoding():
     assert _attachment_name("attachment; filename*=utf-8''%E6%96%87%E4%BB%B6.mp4") == "文件.mp4"
 
 
+def _varint(value: int) -> bytes:
+    out = b""
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out += bytes([byte | (0x80 if value else 0)])
+        if not value:
+            return out
+
+
 def test_message_facts_expose_the_important_fields():
     """非文字消息要把意图上重要的原始信息挑出来，文本怎么拼由调用方决定。"""
     card = P.CardContent()
@@ -253,7 +263,15 @@ def test_message_facts_expose_the_important_fields():
 
     event = P.ShareCalendarEventContent()
     event.attendeesCount = 3
-    assert decoders.message_facts(16, protobuf_to_dict(event)) == {"kind": "日程", "attendees": 3}
+    # 日程事件在协议里是 bytes：8=开始(秒)、10=结束(秒)、29=标题
+    title = "日程标题".encode()
+    event.calendarEvent = (b"\x40" + _varint(1791874800) + b"\x50" + _varint(1791878400)
+                           + b"\xea" + _varint(len(title)) + title)
+    facts = decoders.message_facts(16, protobuf_to_dict(event))
+    assert facts["title"] == "日程标题"
+    assert facts["start_ms"] == 1791874800000
+    assert facts["end_ms"] == 1791878400000
+    assert facts["attendees"] == 3
 
     # 文字类消息的正文由调用方从富文本自己渲染，这里不加工
     assert decoders.decode_message_content(3, P.FileContent(key="k", name="a.txt").SerializeToString())[0] == ""
