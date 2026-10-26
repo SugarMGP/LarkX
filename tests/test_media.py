@@ -223,8 +223,11 @@ def test_message_facts_expose_the_important_fields():
                      "description": "9月", "url": "https://example.com/approval/1"}
 
     card2 = P.CardContent()
-    card2.jsonCard = json.dumps({"config": {"header": {"title": {"content": "新卡片"}}}})
-    assert decoders.message_facts(14, protobuf_to_dict(card2))["title"] == "新卡片"
+    card2.jsonCard = json.dumps({"config": {"header": {"title": {"content": "新卡片"},
+                                                     "subtitle": {"content": "副标题"}}},
+                                 "elements": [{"tag": "markdown", "content": "正文第一段"}]})
+    facts = decoders.message_facts(14, protobuf_to_dict(card2))
+    assert (facts["title"], facts["subtitle"], facts["description"]) == ("新卡片", "副标题", "正文第一段")
 
     meeting = P.VideoChatContent()
     meeting.meetingCard.topic = "双周会"

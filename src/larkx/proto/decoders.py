@@ -387,9 +387,12 @@ def message_facts(message_type: int, content: dict) -> dict:
         return {"kind": "表情"}
     if message_type == 14:
         header = content.get("cardHeader") or {}
-        title = header.get("title") or header.get("mainTitle") or _card_json_title(content)
-        return {"kind": "卡片", "title": title, "subtitle": header.get("subtitle", ""),
-                "description": content.get("cardDesc", ""), "url": _card_link(content)}
+        card = _card_json(content)
+        return {"kind": "卡片",
+                "title": header.get("title") or header.get("mainTitle") or _card_json_title(card),
+                "subtitle": header.get("subtitle") or _card_json_subtitle(card),
+                "description": content.get("cardDesc", "") or _card_json_body(card),
+                "url": _card_link(content)}
     if message_type == 19:
         card = content.get("meetingCard") or {}
         return {"kind": "视频会议", "topic": card.get("topic", ""),
@@ -423,14 +426,56 @@ def message_facts(message_type: int, content: dict) -> dict:
     return {"kind": f"{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息"}
 
 
-def _card_json_title(content: dict) -> str:
-    """卡片 JSON 里的标题（新卡片没有 cardHeader，标题在 config.header.title 里）。"""
+_CARD_TEXT_TAGS = ("markdown", "plain_text", "div", "note", "text_tag")
+
+
+def _card_json(content: dict) -> dict:
+    """卡片 JSON（新卡片的内容都在这，老卡片是 cardHeader）。"""
     raw = content.get("jsonCard") or ""
     try:
         data = json.loads(raw)
     except (ValueError, TypeError):
-        return ""
-    title = ((data.get("config") or {}).get("header") or {}).get("title") or {}
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _card_json_title(card: dict) -> str:
+    """卡片 JSON 里的标题（新卡片没有 cardHeader，标题在 config.header.title 里）。"""
+    title = ((card.get("config") or {}).get("header") or {}).get("title") or {}
     if isinstance(title, str):
         return title
     return title.get("content") or title.get("title") or ""
+
+
+def _card_json_subtitle(card: dict) -> str:
+    """卡片 JSON 里的副标题。"""
+    subtitle = ((card.get("config") or {}).get("header") or {}).get("subtitle") or {}
+    if isinstance(subtitle, str):
+        return subtitle
+    return subtitle.get("content") or subtitle.get("subtitle") or ""
+
+
+def _card_json_body(card: dict) -> str:
+    """卡片正文里第一段文字（markdown/plain_text/div/note 这类元素）。"""
+    for element in card.get("elements") or []:
+        if not isinstance(element, dict) or element.get("tag") not in _CARD_TEXT_TAGS:
+            continue
+        text = _card_text(element)
+        if text:
+            return text
+    return ""
+
+
+def _card_text(element: dict) -> str:
+    """卡片元素里的文字。"""
+    if isinstance(element.get("content"), str):
+        return element["content"]
+    text = element.get("text")
+    if isinstance(text, dict) and isinstance(text.get("content"), str):
+        return text["content"]
+    for child in element.get("elements") or []:
+        if isinstance(child, dict):
+            found = _card_text(child)
+            if found:
+                return found
+    return ""
