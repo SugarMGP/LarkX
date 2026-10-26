@@ -290,20 +290,13 @@ class LarkClient:
         return dict((response or {}).get('chats') or {})
 
     def pull_chat_members(self, chat_id: str) -> dict:
-        """群成员：{成员 id: 成员信息}。
-
-        服务端一次最多给 2000 个成员且不分页（limit/offset 被忽略、没有 nextCursor），
-        成员总数看会话对象的 memberCount。
-        """
+        """群成员：{成员 id: 成员信息}。成员总数看会话对象的 memberCount。"""
         response = self.api('chats.PullChatChattersRequest',
                             {'chatId': str(chat_id), 'needChatters': True})
         return dict((response or {}).get('chatters') or {})
 
     def pull_chatter_profiles(self, chatter_ids: list[str]) -> dict:
-        """批量拿成员资料：{id: {name, email, ...}}，一次最多 2000 个 id。
-
-        真人成员带 email（域账号就是邮箱 @ 前的前缀），机器人没有。
-        """
+        """批量拿成员资料：{id: {name, email, ...}}。真人成员带 email（域账号是邮箱 @ 前的前缀），机器人没有。"""
         response = self.api('chatters.PullChattersByIdsRequest',
                             {'chatId': 0, 'chatterIds': [str(i) for i in chatter_ids], 'needChatters': True})
         return dict((response or {}).get('chatters') or {})
