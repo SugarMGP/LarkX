@@ -21,6 +21,8 @@ MSG_TYPE_NAMES = {
     22: 'COMMERCIALIZED_HONGBAO', 23: 'SHARE_USER_CARD', 24: 'TODO', 25: 'FOLDER',
 }
 CHAT_TYPE_NAMES = {0: 'UNKNOWN', 1: 'P2P', 2: 'GROUP', 3: 'TOPIC_GROUP'}
+# 系统消息（群里有人进群之类的提示），不是对话内容，业务上一般不推给后端。
+SYSTEM_MESSAGE_TYPE = 6
 
 
 def enum_to_int(value):
@@ -188,6 +190,61 @@ def _element_link(element: dict) -> str:
     except Exception:
         return ""
     return getattr(obj, "href", "") or getattr(obj, "url", "") or ""
+
+
+def _calendar_facts(content: dict) -> dict:
+    """日程事件在协议里没有 proto 定义（是 bytes），这里按 wire 格式取标题和时间。
+
+    字段号来自真实样本：8=开始时间(秒)、9=时区、10=结束时间(秒)、29=标题。
+    """
+    fields = _wire_fields(content.get("calendarEvent") or b"")
+    start, end = fields.get(8), fields.get(10)
+    title = fields.get(29)
+    return {"kind": "日程",
+            "title": title if isinstance(title, str) else "",
+            "start_ms": int(start) * 1000 if isinstance(start, int) else None,
+            "end_ms": int(end) * 1000 if isinstance(end, int) else None,
+            "attendees": int(content.get("attendeesCount") or 0)}
+
+
+def _wire_fields(data: bytes) -> dict:
+    """按 protobuf wire 格式读出顶层字段（值是 varint 或 utf-8 字符串/原始字节）。"""
+    fields = {}
+    index = 0
+    while index < len(data):
+        key, index = _read_varint(data, index)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            value, index = _read_varint(data, index)
+            fields[field] = value
+        elif wire == 2:
+            length, index = _read_varint(data, index)
+            chunk = data[index:index + length]
+            index += length
+            try:
+                fields[field] = chunk.decode("utf-8")
+            except UnicodeDecodeError:
+                fields[field] = chunk
+        elif wire == 5:
+            fields[field] = data[index:index + 4]
+            index += 4
+        elif wire == 1:
+            fields[field] = data[index:index + 8]
+            index += 8
+        else:
+            break
+    return fields
+
+
+def _read_varint(data: bytes, index: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        byte = data[index]
+        index += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return value, index
 
 
 def _rich_first(rich_text: dict) -> tuple[str, str]:
@@ -371,8 +428,7 @@ def _message_facts(message_type: int, content: dict) -> dict:
     if message_type == 17:
         return {"kind": "红包", "subject": content.get("subject", "")}
     if message_type == 16:
-        # 日程事件在协议里是 bytes，我们的 proto 没有日程结构，只能给参会人数。
-        return {"kind": "日程", "attendees": int(content.get("attendeesCount") or 0)}
+        return _calendar_facts(content)
     if message_type == 6:
         return {"kind": "系统消息", "text": _system_text(content)}
     return {"kind": f"{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息"}
