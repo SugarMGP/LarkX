@@ -5,6 +5,7 @@ import pytest
 
 from larkx import media
 from larkx.proto import builders, decoders, lark_all_pb2 as L, proto_pb2 as P
+from protobuf_to_dict import protobuf_to_dict
 
 
 def anchor(href: str, content: str) -> bytes:
@@ -210,36 +211,44 @@ def test_open_message_resource_reports_unknown_key(monkeypatch):
     assert fake.closed
 
 
-def test_placeholders_carry_the_important_facts():
-    """非文字消息的占位文本要带上意图相关的关键信息。"""
+def test_message_facts_expose_the_important_fields():
+    """非文字消息要把意图上重要的原始信息挑出来，文本怎么拼由调用方决定。"""
     card = P.CardContent()
     card.cardHeader.title = "审批通过"
+    card.cardHeader.subtitle = "报销单"
+    card.cardDesc = "9月"
     card.actionUrl = "https://example.com/approval/1"
-    assert decoders.decode_message_content(14, card.SerializeToString())[0] == \
-        "[卡片:审批通过 · https://example.com/approval/1]"
+    facts = decoders.message_facts(14, protobuf_to_dict(card))
+    assert facts == {"kind": "卡片", "title": "审批通过", "subtitle": "报销单",
+                     "description": "9月", "url": "https://example.com/approval/1"}
 
     card2 = P.CardContent()
-    card2.cardHeader.title = "报销单"
-    card2.jsonCard = json.dumps({"config": {"actions": [{"behaviors": [
-        {"type": "open_url", "default_url": "https://example.com/expense/9"}]}]}})
-    assert "https://example.com/expense/9" in decoders.decode_message_content(14, card2.SerializeToString())[0]
+    card2.jsonCard = json.dumps({"config": {"header": {"title": {"content": "新卡片"}}}})
+    assert decoders.message_facts(14, protobuf_to_dict(card2))["title"] == "新卡片"
 
     meeting = P.VideoChatContent()
     meeting.meetingCard.topic = "双周会"
     meeting.meetingCard.startTimeMs = 1792738800000
     meeting.meetingCard.endTimeMs = 1792742400000
-    assert decoders.decode_message_content(19, meeting.SerializeToString())[0].startswith("[视频会议:双周会 · ")
+    facts = decoders.message_facts(19, protobuf_to_dict(meeting))
+    assert facts == {"kind": "视频会议", "topic": "双周会",
+                     "start_ms": 1792738800000, "end_ms": 1792742400000}
 
     place = P.LocationContent()
     place.locationDescription.name = "望京SOHO"
     place.locationDescription.description = "T1 18层"
-    assert decoders.decode_message_content(20, place.SerializeToString())[0] == "[位置:望京SOHO · T1 18层]"
+    assert decoders.message_facts(20, protobuf_to_dict(place)) == \
+        {"kind": "位置", "name": "望京SOHO", "description": "T1 18层"}
+
+    person = P.ShareUserCardContent()
+    person.name = "张三"
+    person.userId = "7690398870819343329"
+    assert decoders.message_facts(23, protobuf_to_dict(person)) == \
+        {"kind": "名片", "name": "张三", "user_id": "7690398870819343329"}
 
     event = P.ShareCalendarEventContent()
     event.attendeesCount = 3
-    assert decoders.decode_message_content(16, event.SerializeToString())[0] == "[日程:3人参加]"
+    assert decoders.message_facts(16, protobuf_to_dict(event)) == {"kind": "日程", "attendees": 3}
 
-    card_msg = P.ShareUserCardContent()
-    card_msg.name = "张三"
-    card_msg.userId = "7690398870819343329"
-    assert decoders.decode_message_content(23, card_msg.SerializeToString())[0] == "[名片:张三]"
+    # 文字类消息的正文由调用方从富文本自己渲染，这里不加工
+    assert decoders.decode_message_content(3, P.FileContent(key="k", name="a.txt").SerializeToString())[0] == ""

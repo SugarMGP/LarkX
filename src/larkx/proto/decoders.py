@@ -151,32 +151,6 @@ def _elements():
     return _LARK_ALL
 
 
-def _placeholder(kind: str, *parts: str) -> str:
-    """非文字内容的占位文本：类型 + 关键信息，多段用 · 分隔。"""
-    info = " · ".join(part for part in parts if part)
-    return f"[{kind}:{info}]" if info else f"[{kind}]"
-
-
-def _time(ms) -> str:
-    """毫秒时间戳转成 10-26 15:00（服务所在时区）。"""
-    if not ms:
-        return ""
-    try:
-        return datetime.fromtimestamp(int(ms) / 1000).strftime("%m-%d %H:%M")
-    except (TypeError, ValueError, OSError, OverflowError):
-        return ""
-
-
-def _time_range(start_ms, end_ms) -> str:
-    """时间段：10-26 15:00-16:00（同一天不重复日期）。"""
-    start, end = _time(start_ms), _time(end_ms)
-    if not start or not end:
-        return start or end
-    if start.split(" ")[0] == end.split(" ")[0]:
-        return f"{start}-{end.split(' ', 1)[1]}"
-    return f"{start}-{end}"
-
-
 def _card_link(content: dict) -> str:
     """卡片里的链接：actionUrl、正文里的链接、卡片 JSON 里的第一个 url。"""
     url = content.get("actionUrl") or ""
@@ -260,49 +234,48 @@ def decode_message_content(message_type, content_bytes):
                         width, height = (size.get('width', '?'), size.get('height', '?'))
                         break
                 has_crypto = 'crypto' in v2
-                return ("[图片]", d)
+                return ("", d)
             img = (d.get('image') or {}).get('origin') or {}
             key = img.get('key') or (d.get('image') or {}).get('key') or (d.get('image') or {}).get('imageKey', '')
-            return ("[图片]", d)
+            return ("", d)
         if message_type == 3:
             fc = P.FileContent()
             fc.ParseFromString(content_bytes)
             d = protobuf_to_dict(fc)
-            return (_placeholder("文件", d.get('name', '')), d)
+            return ("", d)
         if message_type == 15:
             mc = P.MediaContent()
             mc.ParseFromString(content_bytes)
             d = protobuf_to_dict(mc)
-            return (_placeholder("视频", d.get('name', '')), d)
+            return ("", d)
         if message_type == 7:
             ac = P.AudioContent()
             ac.ParseFromString(content_bytes)
             d = protobuf_to_dict(ac)
-            return ("[语音]", d)
+            return ("", d)
         if message_type == 10:
             sc = P.StickerContent()
             sc.ParseFromString(content_bytes)
             d = protobuf_to_dict(sc)
-            return ("[表情]", d)
+            return ("", d)
         if message_type == 14:
             cc = P.CardContent()
             cc.ParseFromString(content_bytes)
             d = protobuf_to_dict(cc)
             header = d.get('cardHeader') or {}
             title = header.get('title') or header.get('mainTitle') or ''
-            return (_placeholder("卡片", title, _card_link(d)), d)
+            return ("", d)
         if message_type == 11:
             mfc = P.MergeForwardContent()
             mfc.ParseFromString(content_bytes)
             d = protobuf_to_dict(mfc)
-            name = d.get('groupChatName') or f"{d.get('p2pCreatorName', '')}与{d.get('p2pPartnerName', '')}的会话"
-            return (_placeholder("合并转发", name), d)
+            return ("", d)
         if message_type == 20:
             lc = P.LocationContent()
             lc.ParseFromString(content_bytes)
             d = protobuf_to_dict(lc)
             desc = d.get('locationDescription') or {}
-            return (_placeholder("位置", desc.get('name', ''), desc.get('description', '')), d)
+            return ("", d)
         if message_type == 6:
             sc = P.SystemContent()
             sc.ParseFromString(content_bytes)
@@ -312,12 +285,12 @@ def decode_message_content(message_type, content_bytes):
                 for item in (cv or {}).get('items', []):
                     if item.get('text'):
                         texts.append(item['text'])
-            return (f"[系统消息] {' '.join(texts)}", d)
+            return ("", d)
         if message_type == 23:
             sc = P.ShareUserCardContent()
             sc.ParseFromString(content_bytes)
             d = protobuf_to_dict(sc)
-            return (_placeholder("名片", d.get('name', '')), d)
+            return ("", d)
         if message_type == 9:
             sc = P.ShareGroupChatContent()
             sc.ParseFromString(content_bytes)
@@ -325,36 +298,33 @@ def decode_message_content(message_type, content_bytes):
             chat = d.get('chat') or {}
             chat_name = chat.get('name', '')
             chat_id = d.get('chatId') or chat.get('id', '')
-            return (_placeholder("群分享", chat_name), d)
+            return ("", d)
         if message_type == 16:
             sc = P.ShareCalendarEventContent()
             sc.ParseFromString(content_bytes)
             d = protobuf_to_dict(sc)
             # 日程事件本身在协议里是 bytes，我们的 proto 没有日程结构，只能给参会人数。
-            count = int(d.get('attendeesCount') or 0)
-            return (_placeholder("日程", f"{count}人参加" if count else ""), d)
+            return ("", d)
         if message_type == 17:
             hc = P.HongbaoContent()
             hc.ParseFromString(content_bytes)
             d = protobuf_to_dict(hc)
-            return (_placeholder("红包", d.get('subject', '')), d)
+            return ("", d)
         if message_type == 12:
             cc = P.CalendarContent()
             cc.ParseFromString(content_bytes)
             d = protobuf_to_dict(cc)
-            return ("[日历]", d)
+            return ("", d)
         if message_type == 19:
             vc = P.VideoChatContent()
             vc.ParseFromString(content_bytes)
             d = protobuf_to_dict(vc)
-            card = d.get('meetingCard') or {}
-            return (_placeholder("视频会议", card.get('topic', ''),
-                                 _time_range(card.get('startTimeMs'), card.get('endTimeMs'))), d)
+            return ("", d)
         if message_type == 8:
             ec = P.EmailContent()
             ec.ParseFromString(content_bytes)
             d = protobuf_to_dict(ec)
-            return (_placeholder("邮件", d.get('title', '')), d)
+            return ("", d)
     except Exception as e:
         return (f'[{MSG_TYPE_NAMES.get(message_type, message_type)}消息解析失败: {e}]', None)
     return (f'[{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息]', None)
@@ -396,3 +366,71 @@ def decode_push_messages(raw: bytes):
         root_id = v.get('rootId') or ''
         out.append({'msg_id': v.get('id'), 'msg_type': message_type, 'msg_type_name': MSG_TYPE_NAMES.get(message_type, str(message_type)), 'from_id': v.get('fromId'), 'chat_id': v.get('chatId') or v.get('channelId'), 'chat_type': chat_type, 'chat_type_name': CHAT_TYPE_NAMES.get(chat_type, str(chat_type)), 'at_me': bool(at_me_map.get(v.get('id')) or at_me_map.get(k)), 'root_id': root_id, 'parent_id': v.get('parentId') or '', 'cid': v.get('cid') or '', 'position': v.get('position'), 'create_time': v.get('createTime'), 'content': summary, 'content_data': data, **flags})
     return out
+
+
+def message_facts(message_type: int, content: dict) -> dict:
+    """按类型挑出消息里"意图上重要"的信息（原始值；怎么拼成文本由调用方决定）。
+
+    非文字消息的正文就是这些事实拼出来的：文件/视频给名字，卡片给标题+副标题+描述+链接，
+    视频会议给主题+起止时间，位置给名称+地址，名片给人名+用户 id，日程给参会人数。
+    """
+    content = content or {}
+    if message_type in (3, 13):
+        return {"kind": "文件", "name": content.get("name", "")}
+    if message_type == 15:
+        return {"kind": "视频", "name": content.get("name", "")}
+    if message_type == 7:
+        return {"kind": "语音"}
+    if message_type == 5:
+        return {"kind": "图片"}
+    if message_type == 10:
+        return {"kind": "表情"}
+    if message_type == 14:
+        header = content.get("cardHeader") or {}
+        title = header.get("title") or header.get("mainTitle") or _card_json_title(content)
+        return {"kind": "卡片", "title": title, "subtitle": header.get("subtitle", ""),
+                "description": content.get("cardDesc", ""), "url": _card_link(content)}
+    if message_type == 19:
+        card = content.get("meetingCard") or {}
+        return {"kind": "视频会议", "topic": card.get("topic", ""),
+                "start_ms": card.get("startTimeMs"), "end_ms": card.get("endTimeMs")}
+    if message_type == 20:
+        desc = content.get("locationDescription") or {}
+        return {"kind": "位置", "name": desc.get("name", ""), "description": desc.get("description", "")}
+    if message_type == 23:
+        return {"kind": "名片", "name": content.get("name", ""), "user_id": content.get("userId", "")}
+    if message_type == 9:
+        chat = content.get("chat") or {}
+        return {"kind": "群分享", "name": chat.get("name", "")}
+    if message_type == 11:
+        name = content.get("groupChatName") or \
+            f"{content.get('p2pCreatorName', '')}与{content.get('p2pPartnerName', '')}的会话"
+        return {"kind": "合并转发", "name": name}
+    if message_type == 8:
+        return {"kind": "邮件", "title": content.get("title", "")}
+    if message_type == 17:
+        return {"kind": "红包", "subject": content.get("subject", "")}
+    if message_type == 16:
+        # 日程事件在协议里是 bytes，我们的 proto 没有日程结构，只能给参会人数。
+        return {"kind": "日程", "attendees": int(content.get("attendeesCount") or 0)}
+    if message_type == 6:
+        texts = []
+        for value in (content.get("sysContentValues") or {}).values():
+            for item in (value or {}).get("items", []):
+                if item.get("text"):
+                    texts.append(item["text"])
+        return {"kind": "系统消息", "text": " ".join(texts)}
+    return {"kind": f"{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息"}
+
+
+def _card_json_title(content: dict) -> str:
+    """卡片 JSON 里的标题（新卡片没有 cardHeader，标题在 config.header.title 里）。"""
+    raw = content.get("jsonCard") or ""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return ""
+    title = ((data.get("config") or {}).get("header") or {}).get("title") or {}
+    if isinstance(title, str):
+        return title
+    return title.get("content") or title.get("title") or ""
