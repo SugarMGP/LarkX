@@ -314,7 +314,12 @@ class LarkClient:
 
     def get_user_profile(self, user_id: str) -> dict | None:
         """单个用户资料（姓名、邮箱、英文名、部门）；查不到返回 None。"""
-        response = self.api('users.PullUserProfileRequest', {'targetUserId': str(user_id)})
+        try:
+            # targetUserId 是 int64，个别消息的发送人是 "all" 这类非数字 id，直接查不到。
+            target = int(user_id)
+        except (TypeError, ValueError):
+            return None
+        response = self.api('users.PullUserProfileRequest', {'targetUserId': target})
         if not response or not response.get('name'):
             return None
         return response

@@ -191,3 +191,23 @@ def test_send_message_request_sends_a_prepared_request(monkeypatch):
     sent = P.PutMessageRequest()
     sent.ParseFromString(packets[0].payload)
     assert (sent.chatId, sent.cid) == ("c1", "fixed")
+
+
+def test_get_user_profile_skips_non_numeric_ids(monkeypatch):
+    """发送人是 "all" 这类非数字 id 时查资料会报错，直接当成查不到。"""
+    from larkx.client import LarkClient
+    from larkx.auth import LarkAuth
+
+    class Client(LarkClient):
+        def __init__(self):
+            self.auth = SimpleNamespace(require_valid=lambda: None, app_key="k", user_id="1")
+            self.calls = 0
+
+        def api(self, type_or_cmd, data=None, raw=None):
+            self.calls += 1
+            return {"name": "张三"}
+
+    client = Client()
+    assert client.get_user_profile("all") is None
+    assert client.calls == 0
+    assert client.get_user_profile("7690398870819343329")["name"] == "张三"
