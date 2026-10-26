@@ -299,6 +299,15 @@ class LarkClient:
                             {'chatId': str(chat_id), 'needChatters': True})
         return dict((response or {}).get('chatters') or {})
 
+    def pull_chatter_profiles(self, chatter_ids: list[str]) -> dict:
+        """批量拿成员资料：{id: {name, email, ...}}，一次最多 2000 个 id。
+
+        真人成员带 email（域账号就是邮箱 @ 前的前缀），机器人没有。
+        """
+        response = self.api('chatters.PullChattersByIdsRequest',
+                            {'chatId': 0, 'chatterIds': [str(i) for i in chatter_ids], 'needChatters': True})
+        return dict((response or {}).get('chatters') or {})
+
     def pull_feed(self, count: int = 50, cursor: int | None = None) -> dict:
         """收件箱：最近会话和消息。cursor 传上一页的 next_cursor 取更早的一页。"""
         data = {'type': 1, 'pullFeedType': 2, 'businessType': 1, 'count': int(count)}

@@ -229,3 +229,23 @@ def test_pull_chat_members_returns_members_by_id(monkeypatch):
 
     members = Client().pull_chat_members("c1")
     assert members == {"123": {"id": "123", "name": "张三", "type": 1}}
+
+
+def test_pull_chatter_profiles_returns_profiles_by_id(monkeypatch):
+    """批量成员资料：一次拿多个 id，返回带 email 的资料。"""
+    from larkx.client import LarkClient
+    from larkx.auth import LarkAuth
+
+    class Client(LarkClient):
+        def __init__(self):
+            self.auth = SimpleNamespace(require_valid=lambda: None, app_key="k", user_id="1")
+
+        def api(self, type_or_cmd, data=None, raw=None):
+            assert type_or_cmd == "chatters.PullChattersByIdsRequest"
+            assert data == {"chatId": 0, "chatterIds": ["123", "456"], "needChatters": True}
+            return {"chatters": {"123": {"id": "123", "name": "张三", "email": "san@dewu.com"},
+                                "456": {"id": "456", "name": "机器人", "email": None}}}
+
+    profiles = Client().pull_chatter_profiles(["123", "456"])
+    assert profiles["123"]["email"] == "san@dewu.com"
+    assert profiles["456"]["email"] is None
