@@ -62,15 +62,20 @@ def extract_rich_text(rich_text_dict):
             except Exception:
                 ordered = list(dictionary.items())
         for k, v in ordered:
-            text += _render_element(v.get('tag', 1), v.get('property'))
+            text += _render_element(v)
     except Exception:
         pass
     return text
 
 
-def _render_element(tag: int, prop) -> str:
+def _render_element(element: dict) -> str:
     """按元素类型渲染。tag 见 entities.RichTextElement.Tag。"""
+    tag = element.get("tag", 1)
+    prop = element.get("property")
     if tag in TAG_PLACEHOLDERS:
+        # DOCS 带子元素时只是正文容器（消息正文装在它下面），不是云文档卡片。
+        if tag == 22 and element.get("childIds"):
+            return ""
         return TAG_PLACEHOLDERS[tag]
     if not prop:
         return ''

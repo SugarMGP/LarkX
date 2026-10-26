@@ -321,3 +321,14 @@ def test_rich_text_media_becomes_attachments():
     # 属性坏掉时不要抛异常
     broken = {"richText": {"elements": {"dictionary": {"img": {"tag": 2, "property": b"\xff"}}}}}
     assert media.message_attachments(4, broken) == []
+
+
+def test_docs_container_is_not_rendered_as_a_document():
+    """DOCS 元素带子元素时只是正文容器，不该显示成"[文档]"。"""
+    from larkx.proto import decoders
+    rich = {"elementIds": ["doc"], "elements": {"dictionary": {
+        "doc": {"tag": 22, "property": b"", "childIds": ["p"]},
+        "p": {"tag": 1, "property": b"", "childIds": []},
+    }}}
+    text = decoders.extract_rich_text(rich)
+    assert "[文档]" not in text
