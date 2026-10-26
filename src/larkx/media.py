@@ -127,12 +127,19 @@ def message_attachments(message_type: int, content: dict) -> list[dict]:
         return [{"kind": "image", "key": key, "name": "", "size": int(content.get("originSize") or 0)}
                 for key in image_keys(content)]
     if message_type in (3, 13):
-        return [{"kind": "file", "key": content.get("key", ""), "name": content.get("name", ""),
-                 "size": int(content.get("size") or 0)}]
+        return _attachments("file", content)
     if message_type == 15:
-        return [{"kind": "video", "key": content.get("key", ""), "name": content.get("name", ""),
-                 "size": int(content.get("size") or 0)}]
+        return _attachments("video", content)
     if message_type == 7:
-        return [{"kind": "audio", "key": content.get("key", ""), "name": "",
-                 "size": int(content.get("size") or 0)}]
+        return _attachments("audio", content, name="")
     return []
+
+
+def _attachments(kind: str, content: dict, name: str = None) -> list[dict]:
+    """附件列表；没有 key 的（比如 CLOUD_FILE 解析不出 key）就不产出。"""
+    key = content.get("key", "")
+    if not key:
+        return []
+    return [{"kind": kind, "key": key,
+             "name": content.get("name", "") if name is None else name,
+             "size": int(content.get("size") or 0)}]

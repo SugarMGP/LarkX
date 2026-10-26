@@ -695,3 +695,5 @@ def test_message_attachments_normalizes_resource_kinds():
         {"kind": "image", "key": "img_v3_1", "name": "", "size": 180}]
     # 位置/名片这类没有资源，不进附件
     assert message_attachments(20, {"name": "公司", "latitude": "39.9"}) == []
+    # CLOUD_FILE 解析不出 key，就不产出空附件
+    assert message_attachments(13, {}) == []
