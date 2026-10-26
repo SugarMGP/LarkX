@@ -190,6 +190,39 @@ def _element_link(element: dict) -> str:
     return getattr(obj, "href", "") or getattr(obj, "url", "") or ""
 
 
+def _rich_first(rich_text: dict) -> tuple[str, str]:
+    """富文本里的第一段文字和第一个链接。"""
+    text = link = ""
+    elements = ((rich_text.get("elements") or {}).get("dictionary") or {})
+    for element in elements.values():
+        tag = element.get("tag")
+        if not text and tag == 1:
+            text = _content(element.get("property"), "TextProperty")
+        if not link and tag in (6, 17):
+            link = _element_link(element)
+    return text, link
+
+
+def _system_text(content: dict) -> str:
+    """系统消息正文：模板里的 {变量} 换成实际值。"""
+    values = {}
+    for key, value in (content.get("contents") or {}).items():
+        values[key] = value if isinstance(value, str) else _items_text(value)
+    text = content.get("messageTemplate") or ""
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", value)
+    if text:
+        return text
+    return " ".join(_items_text(value) for value in (content.get("sysContentValues") or {}).values())
+
+
+def _items_text(value) -> str:
+    """系统消息变量里的一段段文字。"""
+    if isinstance(value, str):
+        return value
+    return " ".join(item["text"] for item in (value or {}).get("items", []) if item.get("text"))
+
+
 def _first_url(node) -> str:
     """卡片 JSON 里的第一个 http 链接。"""
     if isinstance(node, dict):
@@ -307,15 +340,16 @@ def _message_facts(message_type: int, content: dict) -> dict:
     if message_type == 5:
         return {"kind": "图片"}
     if message_type == 10:
-        return {"kind": "表情"}
+        return {"kind": "表情", "key": content.get("key", "")}
     if message_type == 14:
         header = content.get("cardHeader") or {}
         card = _card_json(content)
+        body_text, body_link = _rich_first(content.get("richtext") or {})
         return {"kind": "卡片",
                 "title": header.get("title") or header.get("mainTitle") or _card_json_title(card),
                 "subtitle": header.get("subtitle") or _card_json_subtitle(card),
-                "description": content.get("cardDesc", "") or _card_json_body(card),
-                "url": _card_link(content)}
+                "description": content.get("cardDesc", "") or body_text or _card_json_body(card),
+                "url": body_link or _card_link(content)}
     if message_type == 19:
         card = content.get("meetingCard") or {}
         return {"kind": "视频会议", "topic": card.get("topic", ""),
@@ -340,12 +374,7 @@ def _message_facts(message_type: int, content: dict) -> dict:
         # 日程事件在协议里是 bytes，我们的 proto 没有日程结构，只能给参会人数。
         return {"kind": "日程", "attendees": int(content.get("attendeesCount") or 0)}
     if message_type == 6:
-        texts = []
-        for value in (content.get("sysContentValues") or {}).values():
-            for item in (value or {}).get("items", []):
-                if item.get("text"):
-                    texts.append(item["text"])
-        return {"kind": "系统消息", "text": " ".join(texts)}
+        return {"kind": "系统消息", "text": _system_text(content)}
     return {"kind": f"{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息"}
 
 

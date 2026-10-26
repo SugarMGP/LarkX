@@ -332,3 +332,45 @@ def test_docs_container_is_not_rendered_as_a_document():
     }}}
     text = decoders.extract_rich_text(rich)
     assert "[文档]" not in text
+
+
+def test_card_facts_use_the_real_card_structure():
+    """真实卡片：标题在 cardHeader，描述和链接在 richtext 里（actionUrl 是动作接口，不是给人点的）。"""
+    from larkx.proto import lark_all_pb2 as L
+    text = L.entities.RichTextElement.TextProperty(content="Go to learn")
+    link = L.entities.RichTextElement.LinkProperty(url="https://applink.feishu.cn/client/web_app/open?appId=x")
+    content = {
+        "cardHeader": {"title": "学习计划通知", "theme": "green"},
+        "actionUrl": "https://internal-api.feishu.cn/lark/card/api/actionv2",
+        "richtext": {"elements": {"dictionary": {
+            "1": {"tag": 1, "property": text.SerializeToString()},
+            "2": {"tag": 17, "property": link.SerializeToString()},
+        }}},
+    }
+    facts = decoders.message_facts(14, content)
+    assert facts["title"] == "学习计划通知"
+    assert facts["description"] == "Go to learn"
+    assert facts["url"] == "https://applink.feishu.cn/client/web_app/open?appId=x"
+
+
+def test_system_message_fills_the_template():
+    facts = decoders.message_facts(6, {
+        "messageTemplate": "{to_chatters} joined the group via a QR Code shared by {from_user}.",
+        "contents": {"to_chatters": "袁滕谊", "from_user": "琳(Lynn)"}})
+    assert facts["text"] == "袁滕谊 joined the group via a QR Code shared by 琳(Lynn)."
+
+
+def test_sticker_is_an_attachment_and_uses_the_static_path(monkeypatch):
+    """表情包的 key 是 v3_ 开头，走文件服务静态资源口。"""
+    assert media.message_attachments(10, {"key": "v3_00mu_abc", "stickerId": "751"}) == [
+        {"kind": "image", "key": "v3_00mu_abc", "name": "", "size": 0}]
+    captured = {}
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        return FakeResponse(content=b"GIF89a", headers={"content-type": "image/gif"})
+
+    monkeypatch.setattr(media.requests, "get", fake_get)
+    _, content_type = media.open_message_resource(auth_stub(), "v3_00mu_abc", "m1")
+    assert content_type == "image/gif"
+    assert captured["url"].endswith("/static-resource/image/v3_00mu_abc")
