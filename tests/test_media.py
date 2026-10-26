@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -207,3 +208,38 @@ def test_open_message_resource_reports_unknown_key(monkeypatch):
     with pytest.raises(KeyError, match="资源 key"):
         media.open_message_resource(auth_stub(), "file_v3_bad", "m3")
     assert fake.closed
+
+
+def test_placeholders_carry_the_important_facts():
+    """非文字消息的占位文本要带上意图相关的关键信息。"""
+    card = P.CardContent()
+    card.cardHeader.title = "审批通过"
+    card.actionUrl = "https://example.com/approval/1"
+    assert decoders.decode_message_content(14, card.SerializeToString())[0] == \
+        "[卡片:审批通过 · https://example.com/approval/1]"
+
+    card2 = P.CardContent()
+    card2.cardHeader.title = "报销单"
+    card2.jsonCard = json.dumps({"config": {"actions": [{"behaviors": [
+        {"type": "open_url", "default_url": "https://example.com/expense/9"}]}]}})
+    assert "https://example.com/expense/9" in decoders.decode_message_content(14, card2.SerializeToString())[0]
+
+    meeting = P.VideoChatContent()
+    meeting.meetingCard.topic = "双周会"
+    meeting.meetingCard.startTimeMs = 1792738800000
+    meeting.meetingCard.endTimeMs = 1792742400000
+    assert decoders.decode_message_content(19, meeting.SerializeToString())[0].startswith("[视频会议:双周会 · ")
+
+    place = P.LocationContent()
+    place.locationDescription.name = "望京SOHO"
+    place.locationDescription.description = "T1 18层"
+    assert decoders.decode_message_content(20, place.SerializeToString())[0] == "[位置:望京SOHO · T1 18层]"
+
+    event = P.ShareCalendarEventContent()
+    event.attendeesCount = 3
+    assert decoders.decode_message_content(16, event.SerializeToString())[0] == "[日程:3人参加]"
+
+    card_msg = P.ShareUserCardContent()
+    card_msg.name = "张三"
+    card_msg.userId = "7690398870819343329"
+    assert decoders.decode_message_content(23, card_msg.SerializeToString())[0] == "[名片:张三]"

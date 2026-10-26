@@ -1,3 +1,6 @@
+import json
+from datetime import datetime
+
 from protobuf_to_dict import protobuf_to_dict
 from . import proto_pb2 as P
 
@@ -148,9 +151,83 @@ def _elements():
     return _LARK_ALL
 
 
-def _placeholder(kind: str, name: str = "") -> str:
-    """非文字内容的占位文本：只留类型和名字。"""
-    return f"[{kind}:{name}]" if name else f"[{kind}]"
+def _placeholder(kind: str, *parts: str) -> str:
+    """非文字内容的占位文本：类型 + 关键信息，多段用 · 分隔。"""
+    info = " · ".join(part for part in parts if part)
+    return f"[{kind}:{info}]" if info else f"[{kind}]"
+
+
+def _time(ms) -> str:
+    """毫秒时间戳转成 10-26 15:00（服务所在时区）。"""
+    if not ms:
+        return ""
+    try:
+        return datetime.fromtimestamp(int(ms) / 1000).strftime("%m-%d %H:%M")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+
+
+def _time_range(start_ms, end_ms) -> str:
+    """时间段：10-26 15:00-16:00（同一天不重复日期）。"""
+    start, end = _time(start_ms), _time(end_ms)
+    if not start or not end:
+        return start or end
+    if start.split(" ")[0] == end.split(" ")[0]:
+        return f"{start}-{end.split(' ', 1)[1]}"
+    return f"{start}-{end}"
+
+
+def _card_link(content: dict) -> str:
+    """卡片里的链接：actionUrl、正文里的链接、卡片 JSON 里的第一个 url。"""
+    url = content.get("actionUrl") or ""
+    if url:
+        return url
+    rich = content.get("richtext") or {}
+    elements = (rich.get("elements") or {}).get("dictionary") or {}
+    for element in elements.values():
+        link = _element_link(element)
+        if link:
+            return link
+    raw = content.get("jsonCard") or ""
+    try:
+        return _first_url(json.loads(raw))
+    except (ValueError, TypeError):
+        return ""
+
+
+def _element_link(element: dict) -> str:
+    """富文本元素里的链接地址。"""
+    class_name = {6: "AnchorProperty", 17: "LinkProperty"}.get(element.get("tag"))
+    if not class_name:
+        return ""
+    cls = getattr(_elements().entities.RichTextElement, class_name, None)
+    if cls is None:
+        return ""
+    obj = cls()
+    try:
+        obj.ParseFromString(element.get("property", b""))
+    except Exception:
+        return ""
+    return getattr(obj, "href", "") or getattr(obj, "url", "") or ""
+
+
+def _first_url(node) -> str:
+    """卡片 JSON 里的第一个 http 链接。"""
+    if isinstance(node, dict):
+        for key in ("url", "href", "link", "default_url", "pc_url", "ios_url", "android_url"):
+            value = node.get(key)
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                return value
+        for value in node.values():
+            found = _first_url(value)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _first_url(item)
+            if found:
+                return found
+    return ""
 
 
 def decode_message_content(message_type, content_bytes):
@@ -213,7 +290,7 @@ def decode_message_content(message_type, content_bytes):
             d = protobuf_to_dict(cc)
             header = d.get('cardHeader') or {}
             title = header.get('title') or header.get('mainTitle') or ''
-            return (_placeholder("卡片", title), d)
+            return (_placeholder("卡片", title, _card_link(d)), d)
         if message_type == 11:
             mfc = P.MergeForwardContent()
             mfc.ParseFromString(content_bytes)
@@ -225,7 +302,7 @@ def decode_message_content(message_type, content_bytes):
             lc.ParseFromString(content_bytes)
             d = protobuf_to_dict(lc)
             desc = d.get('locationDescription') or {}
-            return (_placeholder("位置", desc.get('name', '')), d)
+            return (_placeholder("位置", desc.get('name', ''), desc.get('description', '')), d)
         if message_type == 6:
             sc = P.SystemContent()
             sc.ParseFromString(content_bytes)
@@ -253,7 +330,9 @@ def decode_message_content(message_type, content_bytes):
             sc = P.ShareCalendarEventContent()
             sc.ParseFromString(content_bytes)
             d = protobuf_to_dict(sc)
-            return ("[日程]", d)
+            # 日程事件本身在协议里是 bytes，我们的 proto 没有日程结构，只能给参会人数。
+            count = int(d.get('attendeesCount') or 0)
+            return (_placeholder("日程", f"{count}人参加" if count else ""), d)
         if message_type == 17:
             hc = P.HongbaoContent()
             hc.ParseFromString(content_bytes)
@@ -268,8 +347,9 @@ def decode_message_content(message_type, content_bytes):
             vc = P.VideoChatContent()
             vc.ParseFromString(content_bytes)
             d = protobuf_to_dict(vc)
-            topic = (d.get('meetingCard') or {}).get('topic', '')
-            return (_placeholder("视频会议", topic), d)
+            card = d.get('meetingCard') or {}
+            return (_placeholder("视频会议", card.get('topic', ''),
+                                 _time_range(card.get('startTimeMs'), card.get('endTimeMs'))), d)
         if message_type == 8:
             ec = P.EmailContent()
             ec.ParseFromString(content_bytes)

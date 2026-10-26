@@ -237,6 +237,22 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
   - 网页端自己下载走的是 `LarkAPI.transport.callServerApi`（WASM 内部编码），浏览器里能调，但服务端对文件下载这套命令直接拒绝，网页端最终也是落到上面那个文件服务 HTTP 口。
 - 参考：TS 版同源项目 <https://github.com/fnfun/lark-agent-x-ts> 的 `src/media.ts` 用的是同一个下载 URL，可以对照。
 
+## 消息占位文本：带关键信息，不只带类型
+
+非文字消息的 `decode_message_content` 返回 `[类型:关键信息]`，多段用 ` · ` 分隔。关键是**意图上重要的**信息，不是文件大小这类：
+
+| 类型 | 占位 | 关键信息来源 |
+|---|---|---|
+| 3/15/7/5 | `[文件:note.txt]`、`[视频:clip.mp4]`、`[语音]`、`[图片]` | 文件名 |
+| 14 卡片 | `[卡片:审批通过 · https://…]` | `cardHeader.title`/`mainTitle` + 链接（`actionUrl` → richtext 里的 anchor/link → `jsonCard` 里第一个 url） |
+| 19 视频会议 | `[视频会议:双周会 · 10-23 15:00-16:00]` | `meetingCard.topic` + `startTimeMs/endTimeMs`（服务所在时区） |
+| 20 位置 | `[位置:望京SOHO · T1 18层]` | `locationDescription.name/description` |
+| 9 群分享 / 11 合并转发 | `[群分享:项目群]`、`[合并转发:项目群]` | 群名 |
+| 23 名片 | `[名片:张三]` | `name`（域账号由下游 connector 按 users 缓存补，走 mentions 机制） |
+| 8 邮件 / 17 红包 | `[邮件:标题]`、`[红包:恭喜发财]` | 标题 / 主题 |
+| 16 日程 | `[日程:3人参加]` | 只能给 `attendeesCount`：日程事件在协议里是 `bytes`，我们的 proto 没有 CalendarEvent 结构，**时间地点暂时解析不出来**（要逆出来需要一条真实日程消息样本） |
+| 其它 | `[表情]`、`[系统消息 …]`、`[TODO类型消息]`… | 通用占位 |
+
 ## 不要留没人用的封装
 
 `LarkClient` 的方法如果只有自己那半个调用方在用，就是负债：会烂掉，还会被下游当成可用能力直接调。删掉比留着好。判断"没人用"要 grep 整个仓库（含 tests）和下游仓库。
