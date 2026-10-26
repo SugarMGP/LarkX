@@ -266,7 +266,7 @@ def test_message_facts_expose_the_important_fields():
     # 日程事件在协议里是 bytes：8=开始(秒)、10=结束(秒)、29=标题
     title = "日程标题".encode()
     event.calendarEvent = (b"\x40" + _varint(1791874800) + b"\x50" + _varint(1791878400)
-                           + b"\xea" + _varint(len(title)) + title)
+                           + b"\xea\x01" + _varint(len(title)) + title)
     facts = decoders.message_facts(16, protobuf_to_dict(event))
     assert facts["title"] == "日程标题"
     assert facts["start_ms"] == 1791874800000
