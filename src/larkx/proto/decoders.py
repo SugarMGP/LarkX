@@ -204,7 +204,17 @@ def _first_url(node) -> str:
     return ""
 
 
+# 消息类型 -> content 的 proto 类（文字和富文本特殊处理，见 decode_message_content）
+_CONTENT_TYPES = {
+    3: "FileContent", 5: "ImageContent", 6: "SystemContent", 7: "AudioContent",
+    8: "EmailContent", 9: "ShareGroupChatContent", 10: "StickerContent", 11: "MergeForwardContent",
+    12: "CalendarContent", 14: "CardContent", 15: "MediaContent", 16: "ShareCalendarEventContent",
+    17: "HongbaoContent", 19: "VideoChatContent", 20: "LocationContent", 23: "ShareUserCardContent",
+}
+
+
 def decode_message_content(message_type, content_bytes):
+    """解析消息内容：文字类给正文，其它类型只给内容字典（展示层由调用方拼）。"""
     try:
         if message_type == 4:
             tc = P.TextContent()
@@ -220,114 +230,14 @@ def decode_message_content(message_type, content_bytes):
             title = d.get('title', '')
             text = extract_rich_text(d.get('richText', {})) or d.get('text', '')
             return ((f"{title}\n{text}" if title else text).strip(), d)
-        if message_type == 5:
-            ic = P.ImageContent()
-            ic.ParseFromString(content_bytes)
-            d = protobuf_to_dict(ic)
-            v2 = d.get('imageV2') or {}
-            if v2:
-                key = v2.get('imageKey', '')
-                width = height = '?'
-                for variant in v2.get('variants', []):
-                    if variant.get('type') == 1:
-                        size = variant.get('size') or {}
-                        width, height = (size.get('width', '?'), size.get('height', '?'))
-                        break
-                has_crypto = 'crypto' in v2
-                return ("", d)
-            img = (d.get('image') or {}).get('origin') or {}
-            key = img.get('key') or (d.get('image') or {}).get('key') or (d.get('image') or {}).get('imageKey', '')
-            return ("", d)
-        if message_type == 3:
-            fc = P.FileContent()
-            fc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(fc)
-            return ("", d)
-        if message_type == 15:
-            mc = P.MediaContent()
-            mc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(mc)
-            return ("", d)
-        if message_type == 7:
-            ac = P.AudioContent()
-            ac.ParseFromString(content_bytes)
-            d = protobuf_to_dict(ac)
-            return ("", d)
-        if message_type == 10:
-            sc = P.StickerContent()
-            sc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(sc)
-            return ("", d)
-        if message_type == 14:
-            cc = P.CardContent()
-            cc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(cc)
-            header = d.get('cardHeader') or {}
-            title = header.get('title') or header.get('mainTitle') or ''
-            return ("", d)
-        if message_type == 11:
-            mfc = P.MergeForwardContent()
-            mfc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(mfc)
-            return ("", d)
-        if message_type == 20:
-            lc = P.LocationContent()
-            lc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(lc)
-            desc = d.get('locationDescription') or {}
-            return ("", d)
-        if message_type == 6:
-            sc = P.SystemContent()
-            sc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(sc)
-            texts = []
-            for cv in (d.get('sysContentValues') or {}).values():
-                for item in (cv or {}).get('items', []):
-                    if item.get('text'):
-                        texts.append(item['text'])
-            return ("", d)
-        if message_type == 23:
-            sc = P.ShareUserCardContent()
-            sc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(sc)
-            return ("", d)
-        if message_type == 9:
-            sc = P.ShareGroupChatContent()
-            sc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(sc)
-            chat = d.get('chat') or {}
-            chat_name = chat.get('name', '')
-            chat_id = d.get('chatId') or chat.get('id', '')
-            return ("", d)
-        if message_type == 16:
-            sc = P.ShareCalendarEventContent()
-            sc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(sc)
-            # 日程事件本身在协议里是 bytes，我们的 proto 没有日程结构，只能给参会人数。
-            return ("", d)
-        if message_type == 17:
-            hc = P.HongbaoContent()
-            hc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(hc)
-            return ("", d)
-        if message_type == 12:
-            cc = P.CalendarContent()
-            cc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(cc)
-            return ("", d)
-        if message_type == 19:
-            vc = P.VideoChatContent()
-            vc.ParseFromString(content_bytes)
-            d = protobuf_to_dict(vc)
-            return ("", d)
-        if message_type == 8:
-            ec = P.EmailContent()
-            ec.ParseFromString(content_bytes)
-            d = protobuf_to_dict(ec)
-            return ("", d)
+        class_name = _CONTENT_TYPES.get(message_type)
+        if class_name is None:
+            return (f'[{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息]', None)
+        content = getattr(P, class_name)()
+        content.ParseFromString(content_bytes)
+        return ("", protobuf_to_dict(content))
     except Exception as e:
         return (f'[{MSG_TYPE_NAMES.get(message_type, message_type)}消息解析失败: {e}]', None)
-    return (f'[{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息]', None)
 
 
 def parse_ws_frame(raw: bytes):
@@ -374,6 +284,14 @@ def message_facts(message_type: int, content: dict) -> dict:
     非文字消息的正文就是这些事实拼出来的：文件/视频给名字，卡片给标题+副标题+描述+链接，
     视频会议给主题+起止时间，位置给名称+地址，名片给人名+用户 id，日程给参会人数。
     """
+    try:
+        return _message_facts(message_type, content)
+    except Exception:
+        # 消息内容是发送方可控的，解析失败只降级成通用占位，不能打断消息处理。
+        return {"kind": f"{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息"}
+
+
+def _message_facts(message_type: int, content: dict) -> dict:
     content = content or {}
     if message_type in (3, 13):
         return {"kind": "文件", "name": content.get("name", "")}
@@ -439,19 +357,28 @@ def _card_json(content: dict) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _as_dict(value) -> dict:
+    """只当字典用；卡片 JSON 是发送方可控的，类型不对就当没有。"""
+    return value if isinstance(value, dict) else {}
+
+
 def _card_json_title(card: dict) -> str:
     """卡片 JSON 里的标题（新卡片没有 cardHeader，标题在 config.header.title 里）。"""
-    title = ((card.get("config") or {}).get("header") or {}).get("title") or {}
+    header = _as_dict(_as_dict(card.get("config")).get("header"))
+    title = header.get("title") or ""
     if isinstance(title, str):
         return title
+    title = _as_dict(title)
     return title.get("content") or title.get("title") or ""
 
 
 def _card_json_subtitle(card: dict) -> str:
     """卡片 JSON 里的副标题。"""
-    subtitle = ((card.get("config") or {}).get("header") or {}).get("subtitle") or {}
+    header = _as_dict(_as_dict(card.get("config")).get("header"))
+    subtitle = header.get("subtitle") or ""
     if isinstance(subtitle, str):
         return subtitle
+    subtitle = _as_dict(subtitle)
     return subtitle.get("content") or subtitle.get("subtitle") or ""
 
 

@@ -1,7 +1,7 @@
 import mimetypes
 import os
 import re
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import requests
 from loguru import logger
@@ -53,33 +53,6 @@ def upload_file(auth: LarkAuth, chat_id: str, data: bytes, name: str) -> dict:
     return out
 
 
-def download(auth: LarkAuth, url: str, out_path: str=None, max_bytes: int=200 * 1024 * 1024):
-    """下载文件。登录 cookie 只发给本区域（feishu.cn / larksuite.com）的地址。"""
-    host = urlsplit(url).netloc.lower()
-    same_region = host == auth.region.domain or host.endswith('.' + auth.region.domain)
-    with requests.get(url, cookies=auth.cookies if same_region else {}, timeout=60, stream=True) as r:
-        r.raise_for_status()
-        content_type = r.headers.get('content-type', '')
-        if not out_path:
-            chunks = []
-            size = 0
-            for chunk in r.iter_content(1 << 16):
-                size += len(chunk)
-                if size > max_bytes:
-                    raise ValueError('文件过大')
-                chunks.append(chunk)
-            return (b''.join(chunks), content_type)
-        n = 0
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-        with open(out_path, 'wb') as f:
-            for chunk in r.iter_content(1 << 16):
-                f.write(chunk)
-                n += len(chunk)
-                if n > max_bytes:
-                    raise ValueError('文件过大')
-        return (out_path, content_type, n)
-
-
 def image_keys(content: dict) -> list[str]:
     """从消息内容里取图片 key（img_v3_…）。新版图片在 imageV2 里，旧版在 image 里。"""
     content = content or {}
@@ -101,8 +74,10 @@ def open_message_resource(auth: LarkAuth, key: str, message_id: str = '') -> tup
     url = f'{auth.region.file_host}/download/messages/{message_id}/keys/{key}'
     resp = requests.get(url, cookies=auth.cookies, headers=_web_headers(auth), timeout=60, stream=True)
     if resp.status_code >= 400:
+        body = resp.content[:200]
         resp.close()
-        if resp.status_code == 400:
+        # 只有上游明说 token 不认才当成"资源不存在"，别的 400 是参数/权限问题。
+        if resp.status_code == 400 and b"invalid token" in body:
             raise KeyError(f'飞书不认这个资源 key: {key}')
         resp.raise_for_status()
     name = _attachment_name(resp.headers.get('content-disposition', ''))
@@ -111,9 +86,11 @@ def open_message_resource(auth: LarkAuth, key: str, message_id: str = '') -> tup
 
 
 def _attachment_name(disposition: str) -> str:
-    """从 Content-Disposition 里取文件名。"""
-    match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disposition or '')
-    return match.group(1).strip() if match else ''
+    """从 Content-Disposition 里取文件名（百分号编码的会解码）。"""
+    match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disposition or '', re.IGNORECASE)
+    if not match:
+        return ""
+    return unquote(match.group(1).strip())
 
 
 def message_attachments(message_type: int, content: dict) -> list[dict]:

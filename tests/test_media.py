@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import requests
+
 import pytest
 
 from larkx import media
@@ -92,6 +94,8 @@ class FakeResponse:
         self.closed = False
 
     def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Error")
         return None
 
     def json(self):
@@ -162,23 +166,6 @@ class _Response:
         yield self.body
 
 
-def test_download_only_sends_cookies_to_the_same_region(monkeypatch):
-    seen = {}
-
-    def fake_get(url, **kwargs):
-        seen["url"] = url
-        seen["cookies"] = kwargs.get("cookies")
-        return _Response()
-
-    monkeypatch.setattr("larkx.media.requests.get", fake_get)
-    auth = SimpleNamespace(cookies={"session": "s"},
-                           region=SimpleNamespace(domain="feishu.cn"))
-    media.download(auth, "https://internal-api-lark-file.feishu.cn/x")
-    assert seen["cookies"] == {"session": "s"}
-    media.download(auth, "https://evil.example.com/x")
-    assert seen["cookies"] == {}
-
-
 def test_open_message_resource_streams_and_guesses_type(monkeypatch):
     captured = {}
 
@@ -204,11 +191,26 @@ def test_open_message_resource_guesses_type_from_name(monkeypatch):
 
 
 def test_open_message_resource_reports_unknown_key(monkeypatch):
-    fake = FakeResponse(status_code=400)
+    fake = FakeResponse(status_code=400, content=b"invalid token")
     monkeypatch.setattr(media.requests, "get", lambda url, **kwargs: fake)
     with pytest.raises(KeyError, match="资源 key"):
         media.open_message_resource(auth_stub(), "file_v3_bad", "m3")
     assert fake.closed
+
+
+def test_open_message_resource_keeps_other_errors_as_http_errors(monkeypatch):
+    """上游因为参数/权限回 400 时，不能当成"资源不存在"。"""
+    fake = FakeResponse(status_code=400, content=b"permission denied")
+    monkeypatch.setattr(media.requests, "get", lambda url, **kwargs: fake)
+    with pytest.raises(Exception) as error:
+        media.open_message_resource(auth_stub(), "file_v3_x", "m3")
+    assert not isinstance(error.value, KeyError)
+
+
+def test_attachment_name_decodes_percent_encoding():
+    from larkx.media import _attachment_name
+    assert _attachment_name("attachment; filename*=UTF-8''%E6%96%87%E4%BB%B6.txt") == "文件.txt"
+    assert _attachment_name("attachment; filename*=utf-8''%E6%96%87%E4%BB%B6.mp4") == "文件.mp4"
 
 
 def test_message_facts_expose_the_important_fields():
@@ -255,3 +257,41 @@ def test_message_facts_expose_the_important_fields():
 
     # 文字类消息的正文由调用方从富文本自己渲染，这里不加工
     assert decoders.decode_message_content(3, P.FileContent(key="k", name="a.txt").SerializeToString())[0] == ""
+
+
+def test_message_facts_survive_broken_card_json():
+    """卡片 JSON 是发送方可控的，结构不对只能降级，不能抛异常打断消息处理。"""
+    for raw in ('{"config":"x"}', '{"config":{"header":"y"}}', '{"config":{"header":{"title":["a"]}}}', "不是 json"):
+        facts = decoders.message_facts(14, {"jsonCard": raw})
+        assert facts["kind"] == "卡片" and facts["title"] == ""
+
+
+def test_decode_message_content_parses_every_known_type():
+    """每种类型的 content 都要能解析成字典（文字类另外给正文）。"""
+    samples = {
+        3: P.FileContent(key="file_v3_1", name="a.txt"),
+        5: P.ImageContent(),
+        7: P.AudioContent(key="file_v3_2", duration=3000),
+        8: P.EmailContent(title="通知"),
+        9: P.ShareGroupChatContent(),
+        10: P.StickerContent(),
+        11: P.MergeForwardContent(),
+        12: P.CalendarContent(),
+        14: P.CardContent(),
+        15: P.MediaContent(key="file_v3_3"),
+        16: P.ShareCalendarEventContent(),
+        17: P.HongbaoContent(),
+        19: P.VideoChatContent(),
+        20: P.LocationContent(),
+        23: P.ShareUserCardContent(name="张三"),
+    }
+    for message_type, content in samples.items():
+        text, data = decoders.decode_message_content(message_type, content.SerializeToString())
+        assert text == "", message_type
+        assert isinstance(data, dict), message_type
+    # 文字给正文，富文本给"标题\n正文"
+    assert decoders.decode_message_content(4, P.TextContent(text="hello").SerializeToString())[0] == "hello"
+    post = P.PostContent(title="周报", text="正文")
+    assert decoders.decode_message_content(2, post.SerializeToString())[0] == "周报\n正文"
+    # 没有对应结构的类型只给通用占位
+    assert decoders.decode_message_content(13, b"")[1] is None
