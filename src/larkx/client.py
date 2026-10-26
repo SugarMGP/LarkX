@@ -289,6 +289,16 @@ class LarkClient:
         response = self.api('chats.PullChatsByIdsRequest', {'chatIds': [str(c) for c in chat_ids]})
         return dict((response or {}).get('chats') or {})
 
+    def pull_chat_members(self, chat_id: str) -> dict:
+        """群成员：{成员 id: 成员信息}。
+
+        服务端一次最多给 2000 个成员且不分页（limit/offset 被忽略、没有 nextCursor），
+        成员总数看会话对象的 memberCount。
+        """
+        response = self.api('chats.PullChatChattersRequest',
+                            {'chatId': str(chat_id), 'needChatters': True})
+        return dict((response or {}).get('chatters') or {})
+
     def pull_feed(self, count: int = 50, cursor: int | None = None) -> dict:
         """收件箱：最近会话和消息。cursor 传上一页的 next_cursor 取更早的一页。"""
         data = {'type': 1, 'pullFeedType': 2, 'businessType': 1, 'count': int(count)}

@@ -211,3 +211,21 @@ def test_get_user_profile_skips_non_numeric_ids(monkeypatch):
     assert client.get_user_profile("all") is None
     assert client.calls == 0
     assert client.get_user_profile("7690398870819343329")["name"] == "张三"
+
+
+def test_pull_chat_members_returns_members_by_id(monkeypatch):
+    """群成员按 id 返回；总数在会话对象的 memberCount 里。"""
+    from larkx.client import LarkClient
+    from larkx.auth import LarkAuth
+
+    class Client(LarkClient):
+        def __init__(self):
+            self.auth = SimpleNamespace(require_valid=lambda: None, app_key="k", user_id="1")
+
+        def api(self, type_or_cmd, data=None, raw=None):
+            assert type_or_cmd == "chats.PullChatChattersRequest"
+            assert data == {"chatId": "c1", "needChatters": True}
+            return {"chatters": {"123": {"id": "123", "name": "张三", "type": 1}}}
+
+    members = Client().pull_chat_members("c1")
+    assert members == {"123": {"id": "123", "name": "张三", "type": 1}}
