@@ -295,3 +295,29 @@ def test_decode_message_content_parses_every_known_type():
     assert decoders.decode_message_content(2, post.SerializeToString())[0] == "周报\n正文"
     # 没有对应结构的类型只给通用占位
     assert decoders.decode_message_content(13, b"")[1] is None
+
+
+def test_rich_text_media_becomes_attachments():
+    """图文混排：正文富文本里内嵌的图片/视频也要给出 key，否则后端下不到。"""
+    from larkx.proto import lark_all_pb2 as L
+    image = L.entities.RichTextElement.ImageProperty()
+    image.token = "img_v3_1"
+    image.originKey = "img_v3_1"
+    image.originSize = 180
+    media_prop = L.entities.RichTextElement.MediaProperty()
+    media_prop.key = "file_v3_2"
+    media_prop.name = "clip.mp4"
+    media_prop.size = 112
+    media_prop.mime = "video/mp4"
+    content = {"richText": {"elements": {"dictionary": {
+        "text": {"tag": 1, "property": b""},
+        "img": {"tag": 2, "property": image.SerializeToString()},
+        "media": {"tag": 18, "property": media_prop.SerializeToString()},
+    }}}}
+    assert media.message_attachments(4, content) == [
+        {"kind": "image", "key": "img_v3_1", "name": "", "size": 180},
+        {"kind": "video", "key": "file_v3_2", "name": "clip.mp4", "size": 112},
+    ]
+    # 属性坏掉时不要抛异常
+    broken = {"richText": {"elements": {"dictionary": {"img": {"tag": 2, "property": b"\xff"}}}}}
+    assert media.message_attachments(4, broken) == []

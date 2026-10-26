@@ -5,6 +5,7 @@ from urllib.parse import unquote, urlsplit
 
 import requests
 from loguru import logger
+from protobuf_to_dict import protobuf_to_dict
 from .auth import LarkAuth
 from .config import load_config
 from .region import get_region
@@ -98,6 +99,7 @@ def message_attachments(message_type: int, content: dict) -> list[dict]:
 
     kind 区分资源类型（图片/文件/视频/语音），因为它们的 key 前缀和下载方式都不一样；
     位置、名片这类没有资源的类型不进附件。
+    正文富文本里内嵌的图片/视频（图文混排）也算附件，否则 key 就丢了。
     """
     content = content or {}
     if message_type == 5:
@@ -109,7 +111,45 @@ def message_attachments(message_type: int, content: dict) -> list[dict]:
         return _attachments("video", content)
     if message_type == 7:
         return _attachments("audio", content, name="")
-    return []
+    return _rich_attachments(content.get("richText") or {})
+
+
+def _rich_attachments(rich_text: dict) -> list[dict]:
+    """正文富文本里内嵌的图片/视频（图文混排）。"""
+    out = []
+    elements = ((rich_text.get("elements") or {}).get("dictionary") or {})
+    for element in elements.values():
+        tag = element.get("tag")
+        if tag == 2:
+            prop = _element_property(element, "ImageProperty")
+            key = prop.get("originKey") or prop.get("token") or \
+                ((prop.get("image") or {}).get("imageV2") or {}).get("imageKey") or ""
+            if key:
+                out.append({"kind": "image", "key": key, "name": "",
+                            "size": int(prop.get("originSize") or 0)})
+        elif tag == 18:
+            prop = _element_property(element, "MediaProperty")
+            key = prop.get("key") or ""
+            if key:
+                mime = prop.get("mime") or ""
+                out.append({"kind": "audio" if mime.startswith("audio/") else "video", "key": key,
+                            "name": prop.get("name") or "", "size": int(prop.get("size") or 0)})
+    return out
+
+
+def _element_property(element: dict, class_name: str) -> dict:
+    """富文本元素的属性（按 tag 决定是哪个 proto）。"""
+    from .proto import decoders
+    from .proto import lark_all_pb2 as L
+    cls = getattr(L.entities.RichTextElement, class_name, None)
+    if cls is None:
+        return {}
+    obj = cls()
+    try:
+        obj.ParseFromString(element.get("property", b""))
+    except Exception:
+        return {}
+    return protobuf_to_dict(obj)
 
 
 def _attachments(kind: str, content: dict, name: str = None) -> list[dict]:
