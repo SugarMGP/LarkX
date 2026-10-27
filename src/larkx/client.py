@@ -284,6 +284,26 @@ class LarkClient:
 
     # ---------- 通用查询 ----------
 
+    def forward_message(self, chat_ids: list[str], message_id: str, cid: str = None) -> str:
+        """把一条消息原样转发到指定会话，返回新消息 id（卡片/文件等都能原样转）。"""
+        packet_cid = cid or generate_request_cid()
+        data = {
+            'chatIds': [str(c) for c in chat_ids],
+            'messageId': str(message_id),
+            # 网关要求每个目标会话都带一个 cid（幂等键），少了会回 400 "CIDs required"。
+            'cids': {str(c): f"{packet_cid}-{i}" for i, c in enumerate(chat_ids)},
+        }
+        response = self.api('messages.PutTransmitMessageRequest', data) or {}
+        messages = response.get('messages') or {}
+        for chat_id in chat_ids:
+            message = messages.get(str(chat_id)) or {}
+            if message.get('id'):
+                return str(message['id'])
+        for message in messages.values():
+            if isinstance(message, dict) and message.get('id'):
+                return str(message['id'])
+        return ''
+
     def pull_chats(self, chat_ids: list[str]) -> dict:
         """按 chat_id 取会话信息：群名、会话类型、单聊的 key（两个成员 id）等。"""
         response = self.api('chats.PullChatsByIdsRequest', {'chatIds': [str(c) for c in chat_ids]})

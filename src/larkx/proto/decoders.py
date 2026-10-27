@@ -158,22 +158,99 @@ def _elements():
     return _LARK_ALL
 
 
-def _card_link(content: dict) -> str:
-    """卡片里的链接：actionUrl、正文里的链接、卡片 JSON 里的第一个 url。"""
-    url = content.get("actionUrl") or ""
-    if url:
-        return url
-    rich = content.get("richtext") or {}
-    elements = (rich.get("elements") or {}).get("dictionary") or {}
-    for element in elements.values():
-        link = _element_link(element)
-        if link:
-            return link
-    raw = content.get("jsonCard") or ""
+def _prop(prop: bytes, class_name: str, field: str):
+    """从元素属性里取一个字段（取不到给空串）。"""
+    cls = getattr(_elements().entities.RichTextElement, class_name, None)
+    if cls is None:
+        return ''
+    obj = cls()
     try:
-        return _first_url(json.loads(raw))
-    except (ValueError, TypeError):
-        return ""
+        obj.ParseFromString(prop or b'')
+    except Exception:
+        return ''
+    return getattr(obj, field, '') or ''
+
+
+def card_blocks(content: dict) -> list[dict]:
+    """把卡片正文的块树按出现顺序拍平成块列表（原始值；markdown 由调用方拼）。
+
+    卡片正文在 richtext 里，是一棵按 styleKeys 区分语义的块树：文本、图片、按钮、
+    链接、分隔线、@。容器块被展开成叶子块，顺序即展示顺序。
+    """
+    rich = (content or {}).get('richtext') or {}
+    elements = (rich.get('elements') or {}).get('dictionary') or {}
+    blocks: list[dict] = []
+    seen: set[str] = set()
+
+    def child_text(element: dict) -> str:
+        # 按钮/链接的文字就在子元素里，吃掉后不再单独输出。
+        text = ''
+        for cid in element.get('childIds') or []:
+            seen.add(str(cid))
+            child = elements.get(str(cid)) or {}
+            if child.get('tag') == 1:
+                text += _prop(child.get('property', b''), 'TextProperty', 'content')
+        return text
+
+    def walk(element_id, link: str = '', group: str = '') -> int:
+        """展开一个块，返回它产出的文本块个数。group 是顶层块，用来区分段落。"""
+        element_id = str(element_id)
+        if element_id in seen:
+            return 0
+        seen.add(element_id)
+        element = elements.get(element_id)
+        if element is None:
+            return 0
+        tag = element.get('tag')
+        prop = element.get('property', b'')
+        style = element.get('style') or {}
+        style_keys = element.get('styleKeys') or []
+        if tag == 1:
+            blocks.append({'type': 'text', 'text': _prop(prop, 'TextProperty', 'content'),
+                           'bold': 'txt_bold' in style_keys or style.get('fontWeight') == 'bold',
+                           'italic': style.get('fontStyle') == 'italic', 'link': link,
+                           'group': group})
+            return 1
+        if tag == 2:
+            blocks.append({'type': 'image',
+                           'key': _prop(prop, 'ImageProperty', 'token') or _prop(prop, 'ImageProperty', 'originKey'),
+                           'size': int(_prop(prop, 'ImageProperty', 'originSize') or 0), 'group': group})
+            return 0
+        if tag == 5:
+            blocks.append({'type': 'at', 'text': _prop(prop, 'AtProperty', 'content'),
+                           'user_id': _prop(prop, 'AtProperty', 'userId'), 'group': group})
+            return 0
+        if tag == 6:
+            blocks.append({'type': 'link', 'text': child_text(element), 'url': _element_link(element),
+                           'group': group})
+            return 0
+        if tag == 11:
+            blocks.append({'type': 'button', 'text': child_text(element),
+                           'action_id': _prop(prop, 'ButtonProperty', 'actionId'),
+                           'mode': _prop(prop, 'ButtonProperty', 'mode'), 'group': group})
+            return 0
+        if tag == 32:
+            blocks.append({'type': 'divider', 'group': group})
+            return 0
+        if tag == 17:
+            # 整块内容是一个链接：子块照常展开，链接挂在文本块上。
+            url = _element_link(element)
+            count = 0
+            for cid in element.get('childIds') or []:
+                count += walk(cid, url, group)
+            if not count:
+                blocks.append({'type': 'link', 'text': '', 'url': url, 'group': group})
+            return count
+        count = 0
+        for cid in element.get('childIds') or []:
+            count += walk(cid, link, group)
+        return count
+
+    for element_id in rich.get('elementIds') or []:
+        walk(element_id, group=str(element_id))
+    for element_id in elements:
+        walk(element_id, group=str(element_id))
+    return blocks
 
 
 def _element_link(element: dict) -> str:
@@ -401,12 +478,20 @@ def _message_facts(message_type: int, content: dict) -> dict:
     if message_type == 14:
         header = content.get("cardHeader") or {}
         card = _card_json(content)
-        body_text, body_link = _rich_first(content.get("richtext") or {})
+        body_text, _ = _rich_first(content.get("richtext") or {})
+        blocks = card_blocks(content)
+        link = next((b.get("url") for b in blocks if b.get("type") == "link" and b.get("url")), "")
+        if not link and card:
+            link = _first_url(card)
         return {"kind": "卡片",
                 "title": header.get("title") or header.get("mainTitle") or _card_json_title(card),
                 "subtitle": header.get("subtitle") or _card_json_subtitle(card),
+                "theme": header.get("theme", ""),
                 "description": content.get("cardDesc", "") or body_text or _card_json_body(card),
-                "url": body_link or _card_link(content)}
+                # url 是内容里的链接；action_url 是卡片动作接口，不是给后端看的内容地址。
+                "url": link,
+                "action_url": content.get("actionUrl", ""),
+                "blocks": blocks}
     if message_type == 19:
         card = content.get("meetingCard") or {}
         return {"kind": "视频会议", "topic": card.get("topic", ""),

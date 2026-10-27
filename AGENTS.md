@@ -296,6 +296,13 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 - 卡片发出超过 **14 天（有的 30 天）**就返回「该卡片发送时间已超过 N 天，无法进行互动」；点太频繁返回「操作太频繁了，请稍后重试」。
 - 手上样本卡的 action 全部过期，**没拿到过真实 openUrl**——「离线拿到按钮目标 URL」这条路没走通。
 
+### 解析与转发（LarkX 提供，connector 只拼文本）
+
+- `decoders.card_blocks(content)`：把卡片正文（`richtext` 块树）按展示顺序拍平成块列表——`text`（带 `bold`/`italic`/`link`）、`image`（`key`/`size`）、`button`（`text`/`action_id`/`mode`）、`link`（`text`/`url`）、`at`、`divider`。容器块被展开；按钮/链接的文字在子元素里，已并进块本身。
+- `decoders.message_facts(14, …)` 现在给卡片补了 `theme`、`blocks`、`action_url`，并且 **`url` 只放内容里的链接**（`actionUrl` 是卡片动作接口 `…/lark/card/api/actionv2`，不是给下游看的内容地址）。
+- `media.message_attachments` 支持 type=14：卡片正文在 `richtext`（**不是 `richText`，少个 h**），里面的图要算附件（key 形如 `img_v2_…`/`img_v3_…`，都能按 `download/messages/{message_id}/keys/{key}` 下载）。
+- `LarkClient.forward_message(chat_ids, message_id, cid=None) -> str`：原样转发一条消息，返回新消息 id。`messages.PutTransmitMessageRequest` **必须带 `cids` map**（键=chat_id、值=cid，缺了网关回 400 `CIDs required`），响应里 `messages[chat_id].id` 是新消息 id。
+
 **原样发出去只有一条路：转发。**
 
 | 命令 | cmd | 参数 |

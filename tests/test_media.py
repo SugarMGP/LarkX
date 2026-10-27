@@ -223,6 +223,41 @@ def _varint(value: int) -> bytes:
             return out
 
 
+def test_card_blocks_keep_order_and_formatting():
+    """卡片正文按出现顺序拍平成块，保留加粗/斜体、图片和按钮。"""
+    card = P.CardContent()
+    card.cardHeader.title = "本周菜单"
+    richtext = card.richtext
+    richtext.elementIds.append("t1")
+    element = richtext.elements.dictionary["t1"]
+    element.tag = 1
+    element.property = P.TextProperty(content="今日推荐").SerializeToString()
+    element.style["fontWeight"] = "bold"
+    richtext.elementIds.append("t2")
+    image = richtext.elements.dictionary["t2"]
+    image.tag = 2
+    image.property = L.entities.RichTextElement.ImageProperty(
+        token="img_v3_abc", originSize=1024).SerializeToString()
+    richtext.elementIds.append("t3")
+    button = richtext.elements.dictionary["t3"]
+    button.tag = 11
+    button.property = L.entities.RichTextElement.ButtonProperty(
+        actionId="convert|1", mode="primary").SerializeToString()
+    button.childIds.append("t4")
+    label = richtext.elements.dictionary["t4"]
+    label.tag = 1
+    label.property = P.TextProperty(content="点我").SerializeToString()
+
+    blocks = decoders.card_blocks(protobuf_to_dict(card))
+    assert [b["type"] for b in blocks] == ["text", "image", "button"]
+    assert blocks[0]["text"] == "今日推荐" and blocks[0]["bold"] is True
+    assert blocks[1]["key"] == "img_v3_abc" and blocks[1]["size"] == 1024
+    assert blocks[2]["text"] == "点我" and blocks[2]["action_id"] == "convert|1"
+    # 卡片封面图也要算附件。
+    assert media.message_attachments(14, protobuf_to_dict(card)) == [
+        {"kind": "image", "key": "img_v3_abc", "name": "", "size": 1024}]
+
+
 def test_message_facts_expose_the_important_fields():
     """非文字消息要把意图上重要的原始信息挑出来，文本怎么拼由调用方决定。"""
     card = P.CardContent()
@@ -231,8 +266,10 @@ def test_message_facts_expose_the_important_fields():
     card.cardDesc = "9月"
     card.actionUrl = "https://example.com/approval/1"
     facts = decoders.message_facts(14, protobuf_to_dict(card))
-    assert facts == {"kind": "卡片", "title": "审批通过", "subtitle": "报销单",
-                     "description": "9月", "url": "https://example.com/approval/1"}
+    # actionUrl 是卡片动作接口，不当内容链接；内容链接单独放 action_url。
+    assert facts == {"kind": "卡片", "title": "审批通过", "subtitle": "报销单", "theme": "",
+                     "description": "9月", "url": "", "action_url": "https://example.com/approval/1",
+                     "blocks": []}
 
     card2 = P.CardContent()
     card2.jsonCard = json.dumps({"config": {"header": {"title": {"content": "新卡片"},

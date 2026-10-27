@@ -8,6 +8,7 @@ from loguru import logger
 from protobuf_to_dict import protobuf_to_dict
 from .auth import LarkAuth
 from .config import load_config
+from .proto import decoders
 from .region import get_region
 
 UPLOAD_TIMEOUT = 300
@@ -112,6 +113,11 @@ def message_attachments(message_type: int, content: dict) -> list[dict]:
     if message_type == 10:
         key = content.get("key", "")
         return [{"kind": "image", "key": key, "name": "", "size": 0}] if key else []
+    if message_type == 14:
+        # 卡片正文在 richtext 里（不是 richText），封面图也要算附件。
+        return [{"kind": "image", "key": block["key"], "name": "", "size": block.get("size", 0)}
+                for block in decoders.card_blocks(content)
+                if block.get("type") == "image" and block.get("key")]
     if message_type in (3, 13):
         return _attachments("file", content)
     if message_type == 15:

@@ -249,3 +249,24 @@ def test_pull_chatter_profiles_returns_profiles_by_id(monkeypatch):
     profiles = Client().pull_chatter_profiles(["123", "456"])
     assert profiles["123"]["email"] == "san@dewu.com"
     assert profiles["456"]["email"] is None
+
+
+def test_forward_message_sends_cids_and_returns_new_message_id(monkeypatch):
+    """转发必须带 cids（网关少了会回 400），并从响应里取新消息 id。"""
+    from larkx.proto import gateway
+    from larkx.proto import lark_all_pb2 as L
+    sent = {}
+
+    def fake_api(type_or_cmd, data=None, raw=None):
+        sent["cmd"] = type_or_cmd
+        sent["data"] = data
+        return {"messages": {"c1": {"id": "m-new"}}}
+
+    auth = SimpleNamespace(require_valid=lambda: None, app_key="k", user_id="u",
+                           region=SimpleNamespace(locale="zh_CN"))
+    c = LarkClient(auth)
+    monkeypatch.setattr(c, "api", fake_api)
+    assert c.forward_message(["c1"], "m-src", cid="fixed") == "m-new"
+    assert sent["cmd"] == "messages.PutTransmitMessageRequest"
+    assert sent["data"]["chatIds"] == ["c1"] and sent["data"]["messageId"] == "m-src"
+    assert list(sent["data"]["cids"]) == ["c1"]
