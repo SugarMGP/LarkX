@@ -214,7 +214,7 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 | 20 | LOCATION 位置 | `location`（LocationContent） | ✗ 400，参数没试出来 |
 | 9 | SHARE_GROUP_CHAT 分享群聊 | `chatId` | ✗ 400，参数没试出来 |
 | 10 | STICKER 表情 | `stickerId` `stickerSetId` | 需要真贴纸 id |
-| 14 | CARD 卡片 | `cardType` `actions` … | 复杂 |
+| 14 | CARD 卡片 | `cardType` + `richText` | ✅ 发得出去但**丢标题**；要原样发用转发（见「卡片消息」一节） |
 | 11 | MERGE_FORWARD 合并转发 | `attachments` | 复杂 |
 | 12/16/18 | 日历系列 | `calendarEvent` `calendarType` | 依赖飞书日历对象 |
 | 6/8/17/19/22/25 | 系统/邮件/红包/会议/商业化红包/文件夹 | 服务端产生 | 用不上 |
@@ -256,6 +256,36 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 | 16 日程 | `kind` `attendees`（**日程事件在协议里是 bytes，我们的 proto 没有 CalendarEvent 结构，时间地点解析不出来**；要逆出来需要一条真实日程消息样本） |
 | 6 系统 | `kind` `text` |
 | 其它 | `kind` = "XXX类型消息" |
+
+## 卡片消息（type=14）：能解析什么、怎么原样发
+
+飞书卡片在协议里有两套：`cardVersion=2` 的**老卡片**（`cardHeader` + `richtext` 块树）和**新卡片**（`jsonCard` 字段，整张卡片 JSON）。本租户机器人发的**全是老卡片**（实测某机器人会话 31 条消息里 12 条卡片，`jsonCard` 全为空）。
+
+**老卡片的正文全在消息里**，结构是 `richtext.elements.dictionary` 的一棵树：
+
+- `tag=1` TEXT → `property` 是 `TextProperty{content}`；`tag=5` AT → `AtProperty{userId,content}`；`tag=6` 链接 → `LinkProperty{url}`
+- `tag=2` IMG → `ImageProperty{token,originKey,…}`，图片 key 是 `img_v3_…`，照常能下载
+- `tag=11` BUTTON → `ButtonProperty{actionId,mode}`，**只有动作 id、没有跳转 URL**（`actionId` 长这样 `convert|7a4d2922-…`）
+- 块的语义靠 `styleKeys` 区分：`block_markdown`、`block_div_txt`、`block_action_p_*`、`block_columnset_p`、`block_column_p`、`block_image_p`、`block_hr`、`block_note_p`、`block_button_txt_default`…
+- 带 markdown 块的卡片，文本可能只有 `Upgrade to the latest app version to view the content` 这种**降级提示**（真正文不在消息里，客户端自己取）；纯文本块的卡片正文完整（实测一张招聘卡有 18 个文本节点 + 12 个按钮 + 2 张图）
+- **卡片封面图现在不在 attachments 里**：`media.message_attachments` 对 type=14 取的是 `content["richText"]`，而卡片字段叫 `richtext`（少个 h），取不到
+- `actionUrl`（`https://internal-api.feishu.cn/lark/card/api/actionv2`）是**卡片动作接口**，不是内容链接，别当卡片地址给下游
+
+**原样发出去只有一条路：转发。**
+
+| 命令 | cmd | 参数 |
+|---|---|---|
+| `messages.PutTransmitMessageRequest` | 51 | `chatIds` + `messageId` + **`cids`（map，键=chat_id，值=cid；缺了网关回 400 `CIDs required`）** |
+
+实测：把自己收到的卡片转发到群/单聊都成功，落库消息与源卡片逐字段一致（`cardHeader`/`cardVersion`/`botId`/`richtext` 全同），只有**图片 key 会换成新的**（飞书重新托管），用新消息 id 照样能下载。
+
+**自己造卡片发出去会丢标题**：`messages.PutMessageRequest`（cmd 5）`type=14` + `content.cardType` + `content.richText` 能发出去（实测 HTTP 200），但 `PutMessageRequest.Content` 里**没有 cardHeader 字段**，收到的卡片 `cardHeader` 为空——标题和主题色丢了；`content.title` 也不行。
+
+**走不通的造卡路（别再试）**：
+
+- `card_utils.CardJsonToPBRequest`（cmd 2070，卡片 JSON → PB）：`clientId` 随便填都返回 `status=1001`（填空返回 1000），拿不到 `i18nCard`——普通用户身份走不通，估计要 app/bot 身份。
+- `thriftMessage` 塞卡片原始 bytes → 网关 502 `call kite service fail`。
+- 按钮跳转 URL：`actionUrl` 直接 POST 报 `code 300000`（参数不全），`openplatform.v1.*` 那批卡片/通用卡片命令在协议资产里根本不存在。
 
 ## 不要留没人用的封装
 
