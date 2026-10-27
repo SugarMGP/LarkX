@@ -6,7 +6,7 @@ import requests
 import pytest
 
 from larkx import media
-from larkx.proto import builders, decoders, lark_all_pb2 as L, proto_pb2 as P
+from larkx.proto import builders, decoders, lark_all_pb2 as L
 from protobuf_to_dict import protobuf_to_dict
 
 
@@ -27,7 +27,7 @@ def rich_text(*elements) -> dict:
 
 def test_link_element_is_rendered_as_markdown():
     text = decoders.extract_rich_text(rich_text(
-        (1, P.TextProperty(content="看看这个").SerializeToString()),
+        (1, L.entities.RichTextElement.TextProperty(content="看看这个").SerializeToString()),
         (6, anchor("https://example.com/a", "文档")),
     ))
     assert text == "看看这个[文档](https://example.com/a)"
@@ -40,11 +40,11 @@ def test_link_without_different_text_shows_url_only():
 
 def test_rich_text_element_types_are_all_rendered():
     elements = [
-        (1, P.TextProperty(content="普通").SerializeToString()),
+        (1, L.entities.RichTextElement.TextProperty(content="普通").SerializeToString()),
         (7, L.entities.RichTextElement.BoldProperty(content="粗").SerializeToString()),
         (8, L.entities.RichTextElement.ItalicProperty(content="斜").SerializeToString()),
         (9, L.entities.RichTextElement.UnderlineProperty(content="下划").SerializeToString()),
-        (5, P.AtProperty(userId="u1", content="@张三").SerializeToString()),
+        (5, L.entities.RichTextElement.AtProperty(userId="u1", content="@张三").SerializeToString()),
         (36, L.entities.RichTextElement.MentionProperty(content="提及").SerializeToString()),
         (47, L.entities.RichTextElement.AtUserGroupProperty(
             userGroupId=1, defaultGroupName="群").SerializeToString()),
@@ -68,18 +68,18 @@ def test_media_elements_use_placeholders():
 
 def test_image_and_file_packets_carry_the_uploaded_keys():
     image = builders.build_image_message_packet("img_v3_1", "c1", "req", cid="cid1")
-    req = P.PutMessageRequest(); req.ParseFromString(image.payload)
+    req = L.messages.PutMessageRequest(); req.ParseFromString(image.payload)
     assert (req.type, req.chatId, req.cid, req.content.cryptoToken) == (5, "c1", "cid1", "img_v3_1")
 
     file = builders.build_file_message_packet("file_v3_1", "a.pdf", 12, "application/pdf", "c1", "req", cid="cid2")
-    req = P.PutMessageRequest(); req.ParseFromString(file.payload)
+    req = L.messages.PutMessageRequest(); req.ParseFromString(file.payload)
     assert (req.type, req.content.fileKey, req.content.fileName, req.content.fileSize, req.content.fileMime) == (
         3, "file_v3_1", "a.pdf", 12, "application/pdf")
     assert req.cid == "cid2"
 
 
 def test_reply_relations_use_root_and_parent_only():
-    req = P.PutMessageRequest(); req.ParseFromString(
+    req = L.messages.PutMessageRequest(); req.ParseFromString(
         builders.build_send_message_packet("hi", "c1", "req", reply_to="m1").payload)
     assert (req.rootId, req.parentId, req.isReplyInThread) == ("m1", "m1", False)
 
@@ -213,25 +213,15 @@ def test_attachment_name_decodes_percent_encoding():
     assert _attachment_name("attachment; filename*=utf-8''%E6%96%87%E4%BB%B6.mp4") == "文件.mp4"
 
 
-def _varint(value: int) -> bytes:
-    out = b""
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        out += bytes([byte | (0x80 if value else 0)])
-        if not value:
-            return out
-
-
 def test_card_blocks_keep_order_and_formatting():
     """卡片正文按出现顺序拍平成块，保留加粗/斜体、图片和按钮。"""
-    card = P.CardContent()
+    card = L.entities.CardContent()
     card.cardHeader.title = "本周菜单"
     richtext = card.richtext
     richtext.elementIds.append("t1")
     element = richtext.elements.dictionary["t1"]
     element.tag = 1
-    element.property = P.TextProperty(content="今日推荐").SerializeToString()
+    element.property = L.entities.RichTextElement.TextProperty(content="今日推荐").SerializeToString()
     element.style["fontWeight"] = "bold"
     richtext.elementIds.append("t2")
     image = richtext.elements.dictionary["t2"]
@@ -246,7 +236,7 @@ def test_card_blocks_keep_order_and_formatting():
     button.childIds.append("t4")
     label = richtext.elements.dictionary["t4"]
     label.tag = 1
-    label.property = P.TextProperty(content="点我").SerializeToString()
+    label.property = L.entities.RichTextElement.TextProperty(content="点我").SerializeToString()
 
     blocks = decoders.card_blocks(protobuf_to_dict(card))
     assert [b["type"] for b in blocks] == ["text", "image", "button"]
@@ -260,7 +250,7 @@ def test_card_blocks_keep_order_and_formatting():
 
 def test_message_facts_expose_the_important_fields():
     """非文字消息要把意图上重要的原始信息挑出来，文本怎么拼由调用方决定。"""
-    card = P.CardContent()
+    card = L.entities.CardContent()
     card.cardHeader.title = "审批通过"
     card.cardHeader.subtitle = "报销单"
     card.cardDesc = "9月"
@@ -271,7 +261,7 @@ def test_message_facts_expose_the_important_fields():
                      "description": "9月", "url": "", "action_url": "https://example.com/approval/1",
                      "blocks": []}
 
-    card2 = P.CardContent()
+    card2 = L.entities.CardContent()
     card2.jsonCard = json.dumps({"config": {"header": {"title": {"content": "新卡片"},
                                                      "subtitle": {"content": "副标题"}}},
                                  "elements": [{"tag": "markdown", "content": "正文第一段"}]})
@@ -280,7 +270,7 @@ def test_message_facts_expose_the_important_fields():
     # 新卡片的正文在 blocks 里，description 只是飞书给的官方描述。
     assert facts["blocks"][0]["text"] == "正文第一段"
 
-    meeting = P.VideoChatContent()
+    meeting = L.entities.VideoChatContent()
     meeting.meetingCard.topic = "双周会"
     meeting.meetingCard.startTimeMs = 1792738800000
     meeting.meetingCard.endTimeMs = 1792742400000
@@ -288,24 +278,23 @@ def test_message_facts_expose_the_important_fields():
     assert facts == {"kind": "视频会议", "topic": "双周会",
                      "start_ms": 1792738800000, "end_ms": 1792742400000}
 
-    place = P.LocationContent()
+    place = L.entities.LocationContent()
     place.locationDescription.name = "望京SOHO"
     place.locationDescription.description = "T1 18层"
     assert decoders.message_facts(20, protobuf_to_dict(place)) == \
         {"kind": "位置", "name": "望京SOHO", "description": "T1 18层"}
 
-    person = P.ShareUserCardContent()
+    person = L.entities.ShareUserCardContent()
     person.name = "张三"
     person.userId = "7690398870819343329"
     assert decoders.message_facts(23, protobuf_to_dict(person)) == \
         {"kind": "名片", "name": "张三", "user_id": "7690398870819343329"}
 
-    event = P.ShareCalendarEventContent()
+    event = L.entities.ShareCalendarEventContent()
     event.attendeesCount = 3
-    # 日程事件在协议里是 bytes：8=开始(秒)、10=结束(秒)、29=标题
-    title = "日程标题".encode()
-    event.calendarEvent = (b"\x40" + _varint(1791874800) + b"\x50" + _varint(1791878400)
-                           + b"\xea\x01" + _varint(len(title)) + title)
+    event.calendarEvent.start = 1791874800
+    event.calendarEvent.end = 1791878400
+    event.calendarEvent.summary = "日程标题"
     facts = decoders.message_facts(16, protobuf_to_dict(event))
     assert facts["title"] == "日程标题"
     assert facts["start_ms"] == 1791874800000
@@ -313,7 +302,90 @@ def test_message_facts_expose_the_important_fields():
     assert facts["attendees"] == 3
 
     # 文字类消息的正文由调用方从富文本自己渲染，这里不加工
-    assert decoders.decode_message_content(3, P.FileContent(key="k", name="a.txt").SerializeToString())[0] == ""
+    assert decoders.decode_message_content(3, L.entities.FileContent(key="k", name="a.txt").SerializeToString())[0] == ""
+
+
+def test_rich_text_follows_the_element_tree_not_the_map_order():
+    """富文本按元素树渲染。
+
+    protobuf 的 map 迭代顺序每个进程都不一样，按字典顺序渲染出来的正文顺序会飘；
+    真实顺序只能从 elementIds + childIds 的树上看出来。
+    """
+    def text_element(content):
+        return {"tag": 1, "property": L.entities.RichTextElement.TextProperty(content=content).SerializeToString()}
+
+    dictionary = {
+        # 故意打乱字典顺序：真实阅读顺序是 1 -> 2 -> 4,5 -> 3 -> 6
+        "6": text_element("C"),
+        "3": {"tag": 3, "childIds": ["6"]},
+        "5": text_element("B"),
+        "1": {"tag": 22, "childIds": ["2", "3"]},
+        "4": text_element("A"),
+        "2": {"tag": 3, "childIds": ["4", "5"]},
+    }
+    rich = {"elementIds": ["1"], "elements": {"dictionary": dictionary}}
+    assert decoders.extract_rich_text(rich) == "ABC"
+    assert [e.get("tag") for e, _ in decoders.rich_text_elements(rich)] == [22, 3, 1, 1, 3, 1]
+
+
+def test_rich_text_descends_into_every_container_not_just_paragraphs():
+    """容器元素（标题、表格这些）本身没有文字，正文在子元素里，要一样下钻。"""
+    def text_element(content):
+        return {"tag": 1, "property": L.entities.RichTextElement.TextProperty(content=content).SerializeToString()}
+
+    dictionary = {
+        "1": text_element("第一段"),
+        "2": {"tag": 23, "childIds": ["3"]},          # 标题容器
+        "3": text_element("标题文字"),
+        "4": text_element("第二段"),
+    }
+    rich = {"elementIds": ["1", "2", "4"], "elements": {"dictionary": dictionary}}
+    assert decoders.extract_rich_text(rich) == "第一段标题文字第二段"
+
+
+def test_rich_text_order_is_fixed_without_element_ids():
+    """没有 elementIds 时按 id 排，正文顺序不能飘（protobuf map 的顺序每进程不同）。"""
+    def text_element(content):
+        return {"tag": 1, "property": L.entities.RichTextElement.TextProperty(content=content).SerializeToString()}
+
+    dictionary = {str(i): text_element(f"第{i}段") for i in range(2, 12)}
+    rich = {"elements": {"dictionary": dictionary}}
+    first = decoders.extract_rich_text(rich)
+    assert first == "".join(f"第{i}段" for i in range(2, 12))
+    assert decoders.extract_rich_text(rich) == first
+
+
+def test_merge_forward_parses_messages_and_nested_forward():
+    """合并转发：内嵌消息要能读出来，嵌套的合并转发递归展开。"""
+    inner = L.entities.MergeForwardContent()
+    inner.groupChatName = "内层群"
+    inner.chatType = 2
+    inner.messages.add(id="i1", type=4, fromId="u2", createTime=100, position=1,
+                      content=b"\x0a\x03abc")
+
+    outer = L.entities.MergeForwardContent()
+    outer.groupChatName = "外层群"
+    outer.chatType = 2
+    outer.originChatId = 12345
+    outer.chatters["u1"].name = "张三"
+    text = outer.messages.add(id="m1", type=4, fromId="u1", createTime=200, position=1)
+    text.content = b"\x0a\x03hi"
+    nested = outer.messages.add(id="m2", type=11, fromId="u1", createTime=300, position=2)
+    nested.content = inner.SerializeToString()
+
+    tree = decoders.merge_forward(outer.SerializeToString())
+    assert tree["title"] == "外层群"
+    assert tree["chat_type"] == 2
+    assert tree["origin_chat_id"] == "12345"
+    assert tree["chatters"] == {"u1": "张三"}
+    assert [(m["message_id"], m["type"], m["from_id"], m["position"]) for m in tree["messages"]] == \
+        [("m1", 4, "u1", 1), ("m2", 11, "u1", 2)]
+    assert tree["messages"][0]["merge"] is None
+    assert tree["messages"][1]["merge"]["title"] == "内层群"
+    assert tree["messages"][1]["merge"]["messages"][0]["message_id"] == "i1"
+
+    facts = decoders.message_facts(11, protobuf_to_dict(outer))
+    assert facts == {"kind": "合并转发", "name": "外层群", "count": 2}
 
 
 def test_message_facts_survive_broken_card_json():
@@ -326,29 +398,29 @@ def test_message_facts_survive_broken_card_json():
 def test_decode_message_content_parses_every_known_type():
     """每种类型的 content 都要能解析成字典（文字类另外给正文）。"""
     samples = {
-        3: P.FileContent(key="file_v3_1", name="a.txt"),
-        5: P.ImageContent(),
-        7: P.AudioContent(key="file_v3_2", duration=3000),
-        8: P.EmailContent(title="通知"),
-        9: P.ShareGroupChatContent(),
-        10: P.StickerContent(),
-        11: P.MergeForwardContent(),
-        12: P.CalendarContent(),
-        14: P.CardContent(),
-        15: P.MediaContent(key="file_v3_3"),
-        16: P.ShareCalendarEventContent(),
-        17: P.HongbaoContent(),
-        19: P.VideoChatContent(),
-        20: P.LocationContent(),
-        23: P.ShareUserCardContent(name="张三"),
+        3: L.entities.FileContent(key="file_v3_1", name="a.txt"),
+        5: L.entities.ImageContent(),
+        7: L.entities.AudioContent(key="file_v3_2", duration=3000),
+        8: L.entities.EmailContent(title="通知"),
+        9: L.entities.ShareGroupChatContent(),
+        10: L.entities.StickerContent(),
+        11: L.entities.MergeForwardContent(),
+        12: L.entities.CalendarContent(),
+        14: L.entities.CardContent(),
+        15: L.entities.MediaContent(key="file_v3_3"),
+        16: L.entities.ShareCalendarEventContent(),
+        17: L.entities.HongbaoContent(),
+        19: L.entities.VideoChatContent(),
+        20: L.entities.LocationContent(),
+        23: L.entities.ShareUserCardContent(name="张三"),
     }
     for message_type, content in samples.items():
         text, data = decoders.decode_message_content(message_type, content.SerializeToString())
         assert text == "", message_type
         assert isinstance(data, dict), message_type
     # 文字给正文，富文本给"标题\n正文"
-    assert decoders.decode_message_content(4, P.TextContent(text="hello").SerializeToString())[0] == "hello"
-    post = P.PostContent(title="周报", text="正文")
+    assert decoders.decode_message_content(4, L.entities.TextContent(text="hello").SerializeToString())[0] == "hello"
+    post = L.entities.PostContent(title="周报", text="正文")
     assert decoders.decode_message_content(2, post.SerializeToString())[0] == "周报\n正文"
     # 没有对应结构的类型只给通用占位
     assert decoders.decode_message_content(13, b"")[1] is None

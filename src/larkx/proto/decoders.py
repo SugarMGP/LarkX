@@ -1,8 +1,6 @@
 import json
-from datetime import datetime
 
 from protobuf_to_dict import protobuf_to_dict
-from . import proto_pb2 as P
 
 TAG_PLACEHOLDERS = {2: '[图片]', 10: '[表情]', 18: '[视频]', 22: '[文档]'}
 # 富文本元素 tag -> 取文本内容的属性类（tag 见 entities.RichTextElement.Tag）
@@ -29,9 +27,9 @@ def enum_to_int(value):
     if isinstance(value, int):
         return value
     if isinstance(value, str):
-        names = P.entities.Message.Type.keys()
+        names = _entities().Message.Type.keys()
         if value in names:
-            return P.entities.Message.Type.Value(value)
+            return _entities().Message.Type.Value(value)
         try:
             return int(value)
         except ValueError:
@@ -48,29 +46,62 @@ def message_flags(message: dict) -> dict:
     }
 
 
+def _element_order(element_id: str):
+    """元素 id 一般是数字串，按数字排（排不出数字就按字符串）。"""
+    try:
+        return (0, int(element_id))
+    except (TypeError, ValueError):
+        return (1, str(element_id))
+
+
+def rich_text_elements(rich_text_dict) -> list[tuple[dict, str]]:
+    """按阅读顺序给出富文本元素和它渲染出来的文字。
+
+    顺序走元素树：elementIds 是根，childIds 是子元素。**不能按字典顺序排**——
+    protobuf 的 map 迭代顺序每个进程都不一样，按字典排出来的正文顺序是随机的。
+    """
+    rich_text_dict = rich_text_dict or {}
+    dictionary = (rich_text_dict.get('elements') or {}).get('dictionary') or {}
+    if not dictionary:
+        return []
+    roots = [str(i) for i in (rich_text_dict.get('elementIds') or [])] or sorted(dictionary, key=_element_order)
+    ordered = []
+    seen = set()
+
+    def walk(element_id):
+        element_id = str(element_id)
+        if element_id in seen:
+            return
+        seen.add(element_id)
+        element = dictionary.get(element_id)
+        if not element:
+            return
+        text = render_element(element)
+        ordered.append((element, text))
+        # 容器元素（段落、标题、表格、正文容器…）本身没有文字，正文在子元素里；
+        # 自己能渲染出文字的元素（链接、@、图片…）不再下钻，免得文字重复。
+        if not text:
+            for child in element.get('childIds') or []:
+                walk(child)
+
+    for root in roots:
+        walk(root)
+    # 协议异常时可能有走不到的元素，按 id 补上（顺序固定，别让正文顺序飘）。
+    for element_id in sorted((k for k in dictionary if str(k) not in seen), key=_element_order):
+        walk(element_id)
+    return ordered
+
+
 def extract_rich_text(rich_text_dict):
     """把富文本渲染成 markdown 风格的纯文本：文字照旧，链接渲染成 [文字](地址)。"""
-    text = ''
     try:
-        dictionary = rich_text_dict['elements']['dictionary']
-        element_ids = rich_text_dict.get('elementIds') or []
-        if element_ids:
-            listed = set(element_ids)
-            ordered = [(k, dictionary[k]) for k in element_ids if k in dictionary]
-            ordered += [(k, v) for k, v in dictionary.items() if k not in listed]
-        else:
-            try:
-                ordered = sorted(dictionary.items(), key=lambda item: int(item[0]))
-            except Exception:
-                ordered = list(dictionary.items())
-        for k, v in ordered:
-            text += _render_element(v)
+        return ''.join(text for _, text in rich_text_elements(rich_text_dict))
     except Exception:
-        pass
-    return text
+        # 消息内容是发送方可控的，解析失败只降级成空正文，不能打断消息处理。
+        return '' 
 
 
-def _render_element(element: dict) -> str:
+def render_element(element: dict) -> str:
     """按元素类型渲染。tag 见 entities.RichTextElement.Tag。"""
     tag = element.get("tag", 1)
     prop = element.get("property")
@@ -156,6 +187,26 @@ def _elements():
         from . import lark_all_pb2
         _LARK_ALL = lark_all_pb2
     return _LARK_ALL
+
+
+def _entities():
+    """消息内容类型（entities.*）：完整定义，含 cardHeader/chatters 等全部字段。"""
+    return _elements().entities
+
+
+def new_packet():
+    """网关包（improto.Packet）。"""
+    return _elements().improto.Packet()
+
+
+def _frame():
+    """网关帧头（网页端 basic.v1.Frame；lark_all 里的 frame.Frame 是另一套布局）。"""
+    return _elements().WebFrame()
+
+
+def _messages():
+    """消息域类型（messages.*）。"""
+    return _elements().messages
 
 
 # 行内样式元素：tag -> 传给子文本的标记（下划线没有 markdown 对应，忽略）
@@ -352,58 +403,14 @@ def _element_link(element: dict) -> str:
 
 
 def _calendar_facts(content: dict) -> dict:
-    """日程事件在协议里没有 proto 定义（是 bytes），这里按 wire 格式取标题和时间。
-
-    字段号来自真实样本：8=开始时间(秒)、9=时区、10=结束时间(秒)、29=标题。
-    """
-    fields = _wire_fields(content.get("calendarEvent") or b"")
-    start, end = fields.get(8), fields.get(10)
-    title = fields.get(29)
+    """日程事件在 calendarEvent 子消息里（lark.entities.CalendarEvent）。"""
+    event = content.get("calendarEvent") or {}
+    start, end = event.get("start"), event.get("end")
     return {"kind": "日程",
-            "title": title if isinstance(title, str) else "",
+            "title": event.get("summary", ""),
             "start_ms": int(start) * 1000 if isinstance(start, int) else None,
             "end_ms": int(end) * 1000 if isinstance(end, int) else None,
             "attendees": int(content.get("attendeesCount") or 0)}
-
-
-def _wire_fields(data: bytes) -> dict:
-    """按 protobuf wire 格式读出顶层字段（值是 varint 或 utf-8 字符串/原始字节）。"""
-    fields = {}
-    index = 0
-    while index < len(data):
-        key, index = _read_varint(data, index)
-        field, wire = key >> 3, key & 7
-        if wire == 0:
-            value, index = _read_varint(data, index)
-            fields[field] = value
-        elif wire == 2:
-            length, index = _read_varint(data, index)
-            chunk = data[index:index + length]
-            index += length
-            try:
-                fields[field] = chunk.decode("utf-8")
-            except UnicodeDecodeError:
-                fields[field] = chunk
-        elif wire == 5:
-            fields[field] = data[index:index + 4]
-            index += 4
-        elif wire == 1:
-            fields[field] = data[index:index + 8]
-            index += 8
-        else:
-            break
-    return fields
-
-
-def _read_varint(data: bytes, index: int) -> tuple[int, int]:
-    value = shift = 0
-    while True:
-        byte = data[index]
-        index += 1
-        value |= (byte & 0x7F) << shift
-        shift += 7
-        if not byte & 0x80:
-            return value, index
 
 
 def _system_text(content: dict) -> str:
@@ -458,14 +465,14 @@ def decode_message_content(message_type, content_bytes):
     """解析消息内容：文字类给正文，其它类型只给内容字典（展示层由调用方拼）。"""
     try:
         if message_type == 4:
-            tc = P.TextContent()
+            tc = _entities().TextContent()
             tc.ParseFromString(content_bytes)
             if not tc.HasField('richText'):
                 return (tc.text, {'text': tc.text})
             d = protobuf_to_dict(tc)
             return (extract_rich_text(d.get('richText', {})) or d.get('text', ''), d)
         if message_type == 2:
-            pc = P.PostContent()
+            pc = _entities().PostContent()
             pc.ParseFromString(content_bytes)
             d = protobuf_to_dict(pc)
             title = d.get('title', '')
@@ -474,7 +481,7 @@ def decode_message_content(message_type, content_bytes):
         class_name = _CONTENT_TYPES.get(message_type)
         if class_name is None:
             return (f'[{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息]', None)
-        content = getattr(P, class_name)()
+        content = getattr(_entities(), class_name)()
         content.ParseFromString(content_bytes)
         return ("", protobuf_to_dict(content))
     except Exception as e:
@@ -482,9 +489,9 @@ def decode_message_content(message_type, content_bytes):
 
 
 def parse_ws_frame(raw: bytes):
-    frame = P.Frame()
+    frame = _frame()
     frame.ParseFromString(raw)
-    packet = P.Packet()
+    packet = new_packet()
     packet.ParseFromString(frame.payload)
     return ({"seqid": frame.seqid, "logid": frame.logid}, {
         "sid": packet.sid, "cmd": packet.cmd, "status": packet.status, "payload": packet.payload,
@@ -497,7 +504,7 @@ def decode_push_messages(raw: bytes):
     out = []
     if not packet.get('payload'):
         return out
-    pmr = P.PushMessagesRequest()
+    pmr = _messages().PushMessagesRequest()
     pmr.ParseFromString(packet['payload'])
     at_me_map = {key: value for key, value in pmr.messagesAtMe.items()}
     for k, message in pmr.messages.items():
@@ -574,9 +581,11 @@ def _message_facts(message_type: int, content: dict) -> dict:
         chat = content.get("chat") or {}
         return {"kind": "群分享", "name": chat.get("name", "")}
     if message_type == 11:
-        name = content.get("groupChatName") or \
-            f"{content.get('p2pCreatorName', '')}与{content.get('p2pPartnerName', '')}的会话"
-        return {"kind": "合并转发", "name": name}
+        return {"kind": "合并转发",
+                "name": _merge_title(content.get("groupChatName") or "",
+                                     content.get("p2pCreatorName") or "",
+                                     content.get("p2pPartnerName") or ""),
+                "count": len(content.get("messages") or [])}
     if message_type == 8:
         return {"kind": "邮件", "title": content.get("title", "")}
     if message_type == 17:
@@ -586,6 +595,75 @@ def _message_facts(message_type: int, content: dict) -> dict:
     if message_type == 6:
         return {"kind": "系统消息", "text": _system_text(content)}
     return {"kind": f"{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息"}
+
+
+def _merge_title(group: str, creator: str, partner: str) -> str:
+    """合并转发的会话标题：群名优先，单聊用两个人的名字，都没有就留空。"""
+    if group:
+        return str(group)
+    if creator and partner:
+        return f"{creator}与{partner}的会话"
+    return str(creator or partner)
+
+
+def merge_forward(content_bytes: bytes) -> dict:
+    """合并转发内容 -> 会话信息 + 消息树。
+
+    内嵌消息是完整的 entities.Message（id/type/fromId/createTime/content…），
+    chatters 是发送人 id -> 名字。嵌套的合并转发（内层消息 type=11）递归展开成 merge 子树。
+    """
+    mf = _entities().MergeForwardContent()
+    mf.ParseFromString(content_bytes or b"")
+    return _merge_tree(mf)
+
+
+def _merge_tree(mf) -> dict:
+    return {"title": _merge_title(mf.groupChatName, mf.p2pCreatorName, mf.p2pPartnerName),
+            "chat_type": int(mf.chatType),
+            "origin_chat_id": str(mf.originChatId),
+            "chatters": {str(k): str(v.name) for k, v in mf.chatters.items()},
+            "messages": [_merge_message(m) for m in mf.messages]}
+
+
+def _merge_message(msg) -> dict:
+    node = {"type": int(msg.type), "message_id": str(msg.id), "from_id": str(msg.fromId),
+            "create_time": int(msg.createTime), "position": int(msg.position),
+            "chat_id": str(msg.chatId), "content": msg.content, "merge": None}
+    if msg.type == 11 and msg.content:
+        try:
+            nested = _entities().MergeForwardContent()
+            nested.ParseFromString(msg.content)
+            node["merge"] = _merge_tree(nested)
+        except Exception:
+            node["merge"] = None
+    return node
+
+
+def at_property(prop: bytes) -> dict:
+    """AT 元素的属性字节 -> {'user_id', 'name'}；不是 AT 元素就返回空。"""
+    cls = _entities().RichTextElement.AtProperty
+    obj = cls()
+    try:
+        obj.ParseFromString(prop or b'')
+    except Exception:
+        return {}
+    return {'user_id': obj.userId, 'name': (obj.content or '').removeprefix('@')}
+
+
+def parse_packet(content: bytes) -> dict:
+    """网关响应字节 -> 字典。proto3 的默认值不带出来，所以这几个字段补齐。"""
+    packet = new_packet()
+    packet.ParseFromString(content)
+    data = protobuf_to_dict(packet)
+    data.update(cmd=packet.cmd, cid=packet.cid, status=packet.status, payload=packet.payload)
+    return data
+
+
+def parse_push_request(payload: bytes) -> dict:
+    """推送帧的 payload -> PushMessagesRequest 的字典。"""
+    request = _messages().PushMessagesRequest()
+    request.ParseFromString(payload)
+    return protobuf_to_dict(request)
 
 
 def _card_json(content: dict) -> dict:

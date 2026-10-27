@@ -53,9 +53,14 @@ IM 网关：
 | `pull_chats(chat_ids)` | 按 chat_id 批量取会话信息，返回 `{chat_id: 会话}` |
 | `pull_feed(count, cursor)` | 收件箱：最近会话 + 消息；cursor 传上一页的 next_cursor |
 | `pull_chatter_names(user_ids)` | 批量取昵称 `{user_id: 昵称}`（`chatId` 传 0，不限会话） |
+| `pull_messages_by_ids(message_ids)` | 按消息 id 批量取消息 `{id: 消息}`（合并转发按 id 回查整条消息用） |
+| `pull_chatter_profiles(chatter_ids)` | 批量取成员资料 `{id: {name, email, …}}`（真人带邮箱，机器人没有） |
 | `get_user_profile(user_id)` | 单个用户资料（姓名/邮箱/英文名/部门），查不到返回 None |
 | `search_user_ids_by_email(email)` | 按完整邮箱精确查人，返回命中的数字 user id 列表 |
 | `client.space` | 同一份凭证下的 `SpaceClient`（云空间/文档） |
+| `decoders.at_property(prop)` | AT 元素的 property 字节 → `{user_id, name}` |
+| `decoders.parse_packet(bytes)` / `decoders.parse_push_request(bytes)` | 网关响应 / 推送帧 → 字典 |
+| `builders.at_element(user_id, name)` / `builders.text_element(content)` | 富文本元素的 property 字节 |
 
 协议层的错误语义都在库里：`api()` 遇到 `status != 0` 抛 `ProtocolError`；空间接口的 HTTP 错误统一抛 `SpaceError`；`validate()` 里网络异常向上抛，不会被当成"凭证过期"。
 
@@ -241,6 +246,8 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 
 `decoders.decode_message_content(type, bytes)` 返回 `(正文, 内容字典)`：**只有文字(4)和富文本(2)给正文**，其它类型正文是空串，内容全在字典里（LarkX 不做展示层拼装）。
 
+**富文本的顺序只能从元素树上看**：`elementIds` 是根，`childIds` 是子元素。**不能按字典顺序排**——protobuf 的 map 迭代顺序每个进程都不一样（PYTHONHASHSEED），按字典排出来的正文顺序是随机的，重启一次就变一次。`decoders.rich_text_elements(rich)` 按树的阅读顺序给元素，`decoders.render_element(element)` 渲染单个元素，`decoders.extract_rich_text(rich)` 是两者的组合。容器元素（tag 3 段落 / 4 图片 / 22 正文容器 / 26 无序列表 / 27 有序列表 / 28 列表项 / 29 引用）本身没有文字，正文在子元素里。
+
 `decoders.message_facts(type, content)` 按类型挑出"意图上重要"的原始值（不格式化，怎么拼由调用方决定）：
 
 | 类型 | facts |
@@ -251,9 +258,10 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 | 19 视频会议 | `kind` `topic` `start_ms` `end_ms` |
 | 20 位置 | `kind` `name` `description` |
 | 23 名片 | `kind` `name` `user_id`（域账号由下游按用户缓存补） |
-| 9 群分享、11 合并转发 | `kind` `name` |
+| 9 群分享 | `kind` `name` |
+| 11 合并转发 | `kind` `name` `count`（`name` 是会话标题：群名优先，单聊是"A与B的会话"，都没有就空串；`count` 是内嵌消息条数） |
 | 8 邮件、17 红包 | `kind` `title`/`subject` |
-| 16 日程 | `kind` `attendees`（**日程事件在协议里是 bytes，我们的 proto 没有 CalendarEvent 结构，时间地点解析不出来**；要逆出来需要一条真实日程消息样本） |
+| 16 日程 | `kind` `title` `start_ms` `end_ms` `attendees`（事件在 `calendarEvent` 子消息里，就是 `lark.entities.CalendarEvent`：8=开始秒、10=结束秒、29=标题） |
 | 6 系统 | `kind` `text` |
 | 其它 | `kind` = "XXX类型消息" |
 
@@ -268,7 +276,7 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 - `tag=11` BUTTON → `ButtonProperty{actionId,mode}`，**只有动作 id、没有跳转 URL**（`actionId` 长这样 `convert|7a4d2922-…`）
 - 块的语义靠 `styleKeys` 区分：`block_markdown`、`block_div_txt`、`block_action_p_*`、`block_columnset_p`、`block_column_p`、`block_image_p`、`block_hr`、`block_note_p`、`block_button_txt_default`…
 - 带 markdown 块的卡片，文本可能只有 `Upgrade to the latest app version to view the content` 这种**降级提示**（真正文不在消息里，客户端自己取）；纯文本块的卡片正文完整（实测一张招聘卡有 18 个文本节点 + 12 个按钮 + 2 张图）
-- **卡片封面图现在不在 attachments 里**：`media.message_attachments` 对 type=14 取的是 `content["richText"]`，而卡片字段叫 `richtext`（少个 h），取不到
+- **卡片封面图（cardHeader.icon）不在 attachments 里**：`media.message_attachments` 对 type=14 取的是 `card_blocks(content)`，只覆盖正文块树里的图片
 - `actionUrl`（`https://internal-api.feishu.cn/lark/card/api/actionv2`）是**卡片动作接口**，不是内容链接，别当卡片地址给下游
 
 ### 大范围实测（2026-10-27：72 个会话 / 6242 条消息 / 258 张卡片）
@@ -321,6 +329,34 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 - `thriftMessage` 塞卡片原始 bytes → 网关 502 `call kite service fail`。
 - 按钮跳转 URL：`actionUrl` 直接 POST 报 `code 300000`（参数不全），`openplatform.v1.*` 那批卡片/通用卡片命令在协议资产里根本不存在。
 
+## 合并转发（type=11）：内容全在消息里，能整棵读出来
+
+合并转发（聊天记录）的 content **就是完整的 `entities.MergeForwardContent`**，不用额外请求：
+
+| 字段 | 内容 |
+|---|---|
+| `messages` | repeated `entities.Message`——内嵌消息是完整消息对象（id/type/fromId/createTime/position/chatId/content…），不是摘要 |
+| `chatters` | 发送人 id → 名字（`ChatterInfo.name`），**覆盖全部内嵌发送人**，不用再拉人名 |
+| `groupChatName` / `chatType` / `originChatId` | 源会话的群名、会话类型（2=群）、源会话 id |
+| `p2pCreatorName` / `p2pPartnerName` / `p2pCreatorUserId` / `p2pPartnerUserId` | 单聊转发时两个人的名字和 id |
+| `thread` / `messageThreads` / `reactionSnapshots` | 话题、消息话题分组、表情回应快照 |
+
+`decoders.merge_forward(content_bytes)` 把它读成树：
+
+```
+{title, chat_type, origin_chat_id, chatters: {id: 名字},
+ messages: [{type, message_id, from_id, create_time, position, chat_id, content(bytes), merge}]}
+```
+
+`merge` 是嵌套的合并转发（内层消息 type=11 自己又是 MergeForwardContent），递归展开；`content` 给原始 bytes，调用方按 `type` 用 `decode_message_content` 解。
+
+实测要点：
+
+- **内嵌消息的 id 也能按 id 拉到**（`messages.PullMessagesByIdsRequest`，cmd 8）；顶层消息同样能按 id 回查（`client.pull_messages_by_ids`）。
+- **撤回后嵌套内容被清空**（content 变成 0 字节），解析出来是空列表，不是报错。
+- **合并转发里的图片要用内嵌消息自己的 id 下载**（`download/messages/{内嵌message_id}/keys/{key}`），用顶层 id 拿不到。
+- 客户端是**递归渲染**的，所以嵌套合并转发也要能展开。
+
 ## 协议资产怎么升级（网页协议会变，别手改 pb2）
 
 `proto/lark_all_pb2.py`（消息定义）和 `proto/cmd_map.json`（命令号↔类型）是**从飞书网页端提取**的，不是手写的。飞书发版后网页协议就变，资产会过期。提取管线在 `feishu-demo/vendor/lark-agent-x-ts/scripts/proto-pipeline/`（本仓库这版资产就是那个 TS 项目 2026-07-25 版的产物，字节级一致）。
@@ -331,6 +367,7 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 2. **抽 schema 和 cmd**：跑 vendor 的 `extract.ts`——schema 来自 `register("ns","Name",{...})` 调用，cmd 映射来自 `"5|messages.PutMessageRequest|messages.PutMessageResponse|..."` 这种字符串。
 3. **生成 .proto**：跑 vendor 的 `gen-protos.ts` → `lark_all.proto`。
 4. **编译成 Python**：`python -m grpc_tools.protoc -I. --python_out=<dir> lark_all.proto`。**grpcio-tools 必须用 1.69.0**：新版带的 protoc 是 35/6.x，生成的代码会被 protobuf 5.29 运行时拒绝（`ValidateProtobufRuntimeVersion`）。
+4b. **拆平再编译**：`python scripts/flatten_oneofs.py <原始 lark_all_pb2.py> <输出目录>`，产物才是仓库里那份 `proto/lark_all_pb2.py`。网页端 protobuf.js 解析时同 oneof 的字段会同时保留，protobuf Python 会互斥清除，所以**真 oneof**（126 处）要拆成独立字段；proto3 `optional` 的合成 oneof 不互斥，保留它（拆了会丢存在语义：`HasField` 报错、值为 0 的字段在 wire 上不出现）。脚本同时补上网页端的 `WebFrame`（= 网页端 `basic.v1.Frame`）：协议资产里只有 Rust 侧的 `frame.Frame`，headers 是 map，而网页端是 repeated `ExtendedEntry`，网关帧头必须用网页端那份。**直接用原始资产会丢字段。**
 5. **生成 cmd_map**：跑 vendor 的 `gen-cmd-table.ts`；**再用旧 cmd_map 兜底**——网页端下线某个命令后 cmd 字符串就没了，但 proto 类型还在，直接丢会让人调不了。
 6. **验证**：`uv run pytest`，再用真账号把每个封装方法调一遍，新旧资产各跑一次逐项对比输出。
 

@@ -2,9 +2,8 @@ import json
 from pathlib import Path
 from google.protobuf import json_format
 from protobuf_to_dict import protobuf_to_dict
-from . import proto_pb2 as P
+from . import lark_all_pb2 as L
 _CMD_MAP = None
-_LARK_ALL = None
 
 
 def _cmd_map():
@@ -14,16 +13,7 @@ def _cmd_map():
     return _CMD_MAP
 
 
-def _lark_all():
-    global _LARK_ALL
-    if _LARK_ALL is None:
-        from . import lark_all_pb2
-        _LARK_ALL = lark_all_pb2
-    return _LARK_ALL
-
-
 def resolve_type(type_name: str):
-    L = _lark_all()
     parts = type_name.split('.')
     obj = L
     for p in parts:
@@ -53,8 +43,8 @@ def resolve_cmd(type_or_cmd):
     return (entry['cmd'], req_cls, resp_cls)
 
 
-def build_packet(cmd: int, request_id: str, req_msg=None, req_bytes: bytes=None) -> P.Packet:
-    pkt = P.Packet()
+def build_packet(cmd: int, request_id: str, req_msg=None, req_bytes: bytes=None):
+    pkt = L.improto.Packet()
     pkt.payloadType = 1
     pkt.cmd = cmd
     pkt.cid = request_id

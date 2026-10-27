@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 from larkx.client import LarkClient
-from larkx.proto import proto_pb2 as P
+from larkx.proto import lark_all_pb2 as P
 
 
 class Socket:
@@ -35,10 +35,10 @@ def frame(sid="sid-1", text="hello"):
     message.chatId = "c1"
     message.chatType = 1
     message.fromId = "u1"
-    message.content = P.TextContent(text="hello").SerializeToString()
-    push = P.PushMessagesRequest()
+    message.content = P.entities.TextContent(text="hello").SerializeToString()
+    push = P.messages.PushMessagesRequest()
     push.messages["m1"].CopyFrom(message)
-    return P.Frame(payload=P.Packet(
+    return P.WebFrame(payload=P.improto.Packet(
         cmd=6, sid=sid, payload=push.SerializeToString()
     ).SerializeToString()).SerializeToString()
 
@@ -73,9 +73,9 @@ def test_ws_marks_recalled_and_edited_messages(monkeypatch):
         message.status = status
         if is_removed:
             message.isRemoved = True
-        push = P.PushMessagesRequest()
+        push = P.messages.PushMessagesRequest()
         push.messages[message.id].CopyFrom(message)
-        return P.Frame(payload=P.Packet(cmd=6, payload=push.SerializeToString()).SerializeToString()).SerializeToString()
+        return P.WebFrame(payload=P.improto.Packet(cmd=6, payload=push.SerializeToString()).SerializeToString()).SerializeToString()
 
     auth = SimpleNamespace(require_valid=lambda: None, app_key="k", user_id="u",
                            region=SimpleNamespace(locale="zh_CN"))

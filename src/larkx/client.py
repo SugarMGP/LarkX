@@ -1,5 +1,4 @@
 import asyncio
-import time
 from urllib.parse import urlencode
 import requests
 import websockets
@@ -29,7 +28,7 @@ class ProtocolError(RuntimeError):
 
 
 from .auth import LarkAuth
-from .proto import builders, decoders, proto_pb2 as P
+from .proto import builders, decoders
 from .proto.ids import generate_access_key, generate_long_request_id, generate_request_cid, generate_request_id
 
 
@@ -77,35 +76,19 @@ class LarkClient:
         }
         return f'{self.auth.region.ws_url}?{urlencode(params)}'
 
-    @staticmethod
-    def _wrap_frame(packet: P.Packet) -> bytes:
-        frame = P.Frame()
-        seconds = int(time.time())
-        frame.seqid = seconds
-        frame.logid = seconds
-        frame.service = 1
-        frame.method = 1
-        entry = P.ExtendedEntry()
-        entry.key = 'x-request-time'
-        entry.value = str(int(time.time() * 1000))
-        frame.headers.append(entry)
-        frame.payloadType = 'pb'
-        frame.payload = packet.SerializeToString()
-        return frame.SerializeToString()
-
     async def send_ack(self, ws, sid: str):
-        pkt = P.Packet()
+        pkt = decoders.new_packet()
         pkt.cmd = 1
         pkt.payloadType = 1
         pkt.sid = sid
         pkt.payload = b'\x08\x00'
-        await ws.send(self._wrap_frame(pkt))
+        await ws.send(builders.wrap_frame(pkt))
 
     async def send_heartbeat(self, ws):
-        pkt = P.Packet()
+        pkt = decoders.new_packet()
         pkt.cmd = 4
         pkt.payloadType = 1
-        await ws.send(self._wrap_frame(pkt))
+        await ws.send(builders.wrap_frame(pkt))
 
     async def heartbeat_loop(self, ws, interval=30):
         try:
@@ -149,7 +132,7 @@ class LarkClient:
         except Exception as e:
             logger.error(f'消息回调异常: {e}')
 
-    def _gateway_post(self, packet: P.Packet) -> bytes:
+    def _gateway_post(self, packet) -> bytes:
         headers = {
             'content-type': 'application/x-protobuf',
             'accept': '*/*',
@@ -196,7 +179,7 @@ class LarkClient:
     def send_message_request(self, request, cid: str=None) -> str:
         """发送一个已经组装好的 PutMessageRequest；要在正文里插真实 AT 节点时用这个。
 
-        request 是 larkx.proto.proto_pb2.PutMessageRequest，cid 是幂等键。
+        request 是 lark_all 的 messages.PutMessageRequest，cid 是幂等键。
         """
         packet_cid = cid or generate_request_cid()
         request.cid = str(packet_cid)
@@ -205,10 +188,9 @@ class LarkClient:
 
     def _send_packet(self, pkt, packet_cid: str) -> str:
         content = self._gateway_post(pkt)
-        resp = P.Packet()
-        resp.ParseFromString(content)
-        if resp.status:
-            raise ProtocolError(f'飞书命令 {pkt.cmd} 失败: status={resp.status}')
+        resp = decoders.parse_packet(content)
+        if resp["status"]:
+            raise ProtocolError(f'飞书命令 {pkt.cmd} 失败: status={resp["status"]}')
         try:
             msg_id = builders.decode_put_message_response(content)
         except Exception as e:
@@ -265,14 +247,12 @@ class LarkClient:
             req_msg = gateway.request_from_dict(req_cls, data or {})
         pkt = gateway.build_packet(cmd, generate_long_request_id(), req_msg=req_msg, req_bytes=raw if req_msg is None else None)
         content = self._gateway_post(pkt)
-        resp_pkt = P.Packet()
-        resp_pkt.ParseFromString(content)
-        if resp_pkt.status:
-            raise ProtocolError(f'飞书命令 {type_or_cmd} 失败: status={resp_pkt.status}')
-        if resp_cls is not None and resp_pkt.payload:
-            return gateway.response_to_dict(resp_cls, resp_pkt.payload)
-        from protobuf_to_dict import protobuf_to_dict
-        return protobuf_to_dict(resp_pkt)
+        response = decoders.parse_packet(content)
+        if response["status"]:
+            raise ProtocolError(f'飞书命令 {type_or_cmd} 失败: status={response["status"]}')
+        if resp_cls is not None and response["payload"]:
+            return gateway.response_to_dict(resp_cls, response["payload"])
+        return response
 
     # ---------- 通用查询 ----------
 
@@ -334,6 +314,12 @@ class LarkClient:
         """按 position 窗口取消息，返回 {position: 消息}。"""
         response = self.api('messages.PullMessagesByPositionsRequest',
                             {'chatId': str(chat_id), 'positions': [int(p) for p in positions]})
+        return dict((response or {}).get('messages') or {})
+
+    def pull_messages_by_ids(self, message_ids: list[str]) -> dict:
+        """按消息 id 取消息，返回 {id: 消息}。合并转发这种要按 id 回查整条消息。"""
+        response = self.api('messages.PullMessagesByIdsRequest',
+                            {'messageIds': [str(i) for i in message_ids]})
         return dict((response or {}).get('messages') or {})
 
     def get_user_profile(self, user_id: str) -> dict | None:

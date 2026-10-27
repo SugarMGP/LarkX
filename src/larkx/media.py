@@ -154,7 +154,6 @@ def _rich_attachments(rich_text: dict) -> list[dict]:
 
 def _element_property(element: dict, class_name: str) -> dict:
     """富文本元素的属性（按 tag 决定是哪个 proto）。"""
-    from .proto import decoders
     from .proto import lark_all_pb2 as L
     cls = getattr(L.entities.RichTextElement, class_name, None)
     if cls is None:

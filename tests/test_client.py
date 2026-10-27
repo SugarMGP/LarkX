@@ -3,14 +3,14 @@ from types import SimpleNamespace
 import pytest
 
 from larkx.client import LarkClient, NetworkError, ProtocolError, SendUnconfirmed
-from larkx.proto import builders, proto_pb2 as P
+from larkx.proto import builders, lark_all_pb2 as P
 
 
-def parsed(packet, cls=P.PutMessageRequest):
+def parsed(packet, cls=P.messages.PutMessageRequest):
     msg = cls(); msg.ParseFromString(packet.payload); return msg
 
 
-def make_client(monkeypatch, reply=P.Packet().SerializeToString()):
+def make_client(monkeypatch, reply=P.improto.Packet().SerializeToString()):
     auth = SimpleNamespace(require_valid=lambda: None, app_key="k", user_id="u",
                            region=SimpleNamespace(locale="zh_CN"))
     c = LarkClient(auth)
@@ -32,13 +32,13 @@ def test_group_and_p2p_chat_requests_differ_in_type(monkeypatch):
     packets = []
     def post(packet):
         packets.append(packet)
-        return P.Packet().SerializeToString()
+        return P.improto.Packet().SerializeToString()
     monkeypatch.setattr(c, "_gateway_post", post)
     monkeypatch.setattr("larkx.client.generate_request_cid", lambda: "sdk-cid")
     assert c.create_group_chat(["1", "2"], group_name="项目群", description="描述") == ""
     assert c.create_p2p_chat("9") == ""
-    group = P.PutChatRequest(); group.ParseFromString(packets[0].payload)
-    p2p = P.PutChatRequest(); p2p.ParseFromString(packets[1].payload)
+    group = P.chats.PutChatRequest(); group.ParseFromString(packets[0].payload)
+    p2p = P.chats.PutChatRequest(); p2p.ParseFromString(packets[1].payload)
     assert (group.type, list(group.chatterIds), group.groupName, group.groupDesc, group.cid) == (2, ["1", "2"], "项目群", "描述", "sdk-cid")
     assert (p2p.type, list(p2p.chatterIds)) == (1, ["9"])
 
@@ -46,9 +46,9 @@ def test_group_and_p2p_chat_requests_differ_in_type(monkeypatch):
 def test_send_message_request_uses_generated_cid_and_raises_unconfirmed(monkeypatch):
     import larkx.client as client_module
     monkeypatch.setattr(client_module, "generate_request_cid", lambda: "sdk-cid")
-    c = make_client(monkeypatch, reply=P.Packet().SerializeToString())
+    c = make_client(monkeypatch, reply=P.improto.Packet().SerializeToString())
     with pytest.raises(SendUnconfirmed) as error:
-        c.send_message_request(P.PutMessageRequest())
+        c.send_message_request(P.messages.PutMessageRequest())
     assert error.value.cid == "sdk-cid"
 
 
@@ -63,7 +63,7 @@ def test_network_errors_are_separate(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fail)
     with pytest.raises(NetworkError):
-        c._gateway_post(P.Packet(cmd=1))
+        c._gateway_post(P.improto.Packet(cmd=1))
 
 
 
@@ -105,7 +105,7 @@ def test_build_ws_url_contains_ticket_and_request_id(monkeypatch):
 
 
 def test_api_raises_on_protocol_error_status(monkeypatch):
-    c = make_client(monkeypatch, P.Packet(status=9).SerializeToString())
+    c = make_client(monkeypatch, P.improto.Packet(status=9).SerializeToString())
     with pytest.raises(ProtocolError, match="status=9"):
         c.api("users.PullUserProfileRequest", {"targetUserId": "1"})
 
@@ -180,15 +180,15 @@ def test_send_message_request_sends_a_prepared_request(monkeypatch):
 
     def post(packet):
         packets.append(packet)
-        return P.Packet().SerializeToString()
+        return P.improto.Packet().SerializeToString()
 
     monkeypatch.setattr(c, "_gateway_post", post)
-    request = P.PutMessageRequest()
+    request = P.messages.PutMessageRequest()
     request.type = 4
     request.chatId = "c1"
     with pytest.raises(Exception):
         c.send_message_request(request, cid="fixed")
-    sent = P.PutMessageRequest()
+    sent = P.messages.PutMessageRequest()
     sent.ParseFromString(packets[0].payload)
     assert (sent.chatId, sent.cid) == ("c1", "fixed")
 
