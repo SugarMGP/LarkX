@@ -158,6 +158,10 @@ def _elements():
     return _LARK_ALL
 
 
+# 行内样式元素：tag -> 传给子文本的标记（下划线没有 markdown 对应，忽略）
+_CARD_MARKS = {7: 'bold', 8: 'italic', 30: 'code', 31: 'code'}
+
+
 def _prop(prop: bytes, class_name: str, field: str):
     """从元素属性里取一个字段（取不到给空串）。"""
     cls = getattr(_elements().entities.RichTextElement, class_name, None)
@@ -172,18 +176,21 @@ def _prop(prop: bytes, class_name: str, field: str):
 
 
 def card_blocks(content: dict) -> list[dict]:
-    """把卡片正文的块树按出现顺序拍平成块列表（原始值；markdown 由调用方拼）。
+    """把卡片正文按展示顺序拍平成块列表（原始值；markdown 由调用方拼）。
 
-    卡片正文在 richtext 里，是一棵按 styleKeys 区分语义的块树：文本、图片、按钮、
-    链接、分隔线、@。容器块被展开成叶子块，顺序即展示顺序。
+    老卡片（cardHeader + richtext 块树）按块树展开；新版卡片（jsonCard）按 elements 里的
+    文字、按钮、图片拍平。块类型：text（带 bold/italic/code 标记）、image、button、link、
+    at、divider、select。group 标出顶层块，调用方用它分段。
     """
     rich = (content or {}).get('richtext') or {}
     elements = (rich.get('elements') or {}).get('dictionary') or {}
+    if not elements:
+        return _json_card_blocks(_card_json(content or {}))
     blocks: list[dict] = []
     seen: set[str] = set()
 
     def child_text(element: dict) -> str:
-        # 按钮/链接的文字就在子元素里，吃掉后不再单独输出。
+        """按钮/链接的文字在子元素里；吃掉后这些子元素不再单独输出。"""
         text = ''
         for cid in element.get('childIds') or []:
             seen.add(str(cid))
@@ -192,8 +199,8 @@ def card_blocks(content: dict) -> list[dict]:
                 text += _prop(child.get('property', b''), 'TextProperty', 'content')
         return text
 
-    def walk(element_id, link: str = '', group: str = '') -> int:
-        """展开一个块，返回它产出的文本块个数。group 是顶层块，用来区分段落。"""
+    def walk(element_id, link='', group='', bold=False, italic=False, code=False) -> int:
+        """展开一个块，返回它产出的文本块个数。"""
         element_id = str(element_id)
         if element_id in seen:
             return 0
@@ -206,30 +213,45 @@ def card_blocks(content: dict) -> list[dict]:
         style = element.get('style') or {}
         style_keys = element.get('styleKeys') or []
         if tag == 1:
-            blocks.append({'type': 'text', 'text': _prop(prop, 'TextProperty', 'content'),
-                           'bold': 'txt_bold' in style_keys or style.get('fontWeight') == 'bold',
-                           'italic': style.get('fontStyle') == 'italic', 'link': link,
-                           'group': group})
+            blocks.append({
+                'type': 'text', 'text': _prop(prop, 'TextProperty', 'content'),
+                'bold': bold or 'txt_bold' in style_keys or style.get('fontWeight') == 'bold',
+                'italic': italic or style.get('fontStyle') == 'italic',
+                'code': code, 'link': link, 'group': group,
+            })
             return 1
         if tag == 2:
-            blocks.append({'type': 'image',
-                           'key': _prop(prop, 'ImageProperty', 'token') or _prop(prop, 'ImageProperty', 'originKey'),
-                           'size': int(_prop(prop, 'ImageProperty', 'originSize') or 0), 'group': group})
+            blocks.append({
+                'type': 'image',
+                'key': _prop(prop, 'ImageProperty', 'token') or _prop(prop, 'ImageProperty', 'originKey'),
+                'size': int(_prop(prop, 'ImageProperty', 'originSize') or 0), 'group': group,
+            })
             return 0
         if tag == 5:
-            blocks.append({'type': 'at', 'text': _prop(prop, 'AtProperty', 'content'),
-                           'user_id': _prop(prop, 'AtProperty', 'userId'), 'group': group})
+            blocks.append({
+                'type': 'at', 'text': _prop(prop, 'AtProperty', 'content'),
+                'user_id': _prop(prop, 'AtProperty', 'userId'), 'group': group,
+            })
             return 0
         if tag == 6:
-            blocks.append({'type': 'link', 'text': child_text(element), 'url': _element_link(element),
-                           'group': group})
+            # 链接文字在 AnchorProperty.content 里，子元素只是兜底。
+            text = child_text(element)
+            blocks.append({
+                'type': 'link', 'text': _prop(prop, 'AnchorProperty', 'content') or text,
+                'url': _element_link(element), 'group': group,
+            })
             return 0
         if tag == 11:
-            blocks.append({'type': 'button', 'text': child_text(element),
-                           'action_id': _prop(prop, 'ButtonProperty', 'actionId'),
-                           'mode': _prop(prop, 'ButtonProperty', 'mode'), 'group': group})
+            blocks.append({
+                'type': 'button', 'text': child_text(element),
+                'action_id': _prop(prop, 'ButtonProperty', 'actionId'),
+                'mode': _prop(prop, 'ButtonProperty', 'mode'), 'group': group,
+            })
             return 0
-        if tag == 32:
+        if tag == 19:
+            blocks.append({'type': 'select', 'text': _select_text(prop), 'group': group})
+            return 0
+        if tag == 32 or (tag == 14 and 'md_hr' in style_keys):
             blocks.append({'type': 'divider', 'group': group})
             return 0
         if tag == 17:
@@ -237,13 +259,15 @@ def card_blocks(content: dict) -> list[dict]:
             url = _element_link(element)
             count = 0
             for cid in element.get('childIds') or []:
-                count += walk(cid, url, group)
+                count += walk(cid, url, group, bold, italic, code)
             if not count:
                 blocks.append({'type': 'link', 'text': '', 'url': url, 'group': group})
             return count
+        mark = _CARD_MARKS.get(tag)
         count = 0
         for cid in element.get('childIds') or []:
-            count += walk(cid, link, group)
+            count += walk(cid, link, group, bold or mark == 'bold',
+                          italic or mark == 'italic', code or mark == 'code')
         return count
 
     for element_id in rich.get('elementIds') or []:
@@ -252,6 +276,64 @@ def card_blocks(content: dict) -> list[dict]:
         walk(element_id, group=str(element_id))
     return blocks
 
+
+def _json_card_blocks(card: dict) -> list[dict]:
+    """新版卡片 JSON：把 elements 里的文字、按钮、图片按顺序拍平成块。"""
+    blocks: list[dict] = []
+
+    def text_of(node) -> str:
+        if isinstance(node, str):
+            return node
+        if not isinstance(node, dict):
+            return ''
+        for key in ('content', 'text', 'title', 'placeholder'):
+            value = node.get(key)
+            if isinstance(value, str) and value:
+                return value
+            if isinstance(value, dict):
+                found = text_of(value)
+                if found:
+                    return found
+        return ''
+
+    for index, element in enumerate(card.get('elements') or []):
+        if not isinstance(element, dict):
+            continue
+        group = f'json{index}'
+        tag = element.get('tag')
+        if tag == 'action':
+            for action in element.get('actions') or []:
+                if isinstance(action, dict):
+                    blocks.append({'type': 'button', 'text': text_of(action.get('text') or action),
+                                   'action_id': '', 'mode': str(action.get('type') or ''), 'group': group})
+            continue
+        if tag == 'img':
+            blocks.append({'type': 'image', 'key': str(element.get('img_key') or ''),
+                           'size': 0, 'group': group})
+            continue
+        text = text_of(element.get('text') or element.get('content') or element)
+        if text:
+            blocks.append({'type': 'text', 'text': text, 'bold': False, 'italic': False,
+                           'code': False, 'link': '', 'group': group})
+    return blocks
+
+
+def _select_text(prop: bytes) -> str:
+    """下拉菜单：占位文字 + 选项 + 确认语。"""
+    cls = getattr(_elements().entities.RichTextElement, 'SelectMenuProperty', None)
+    if cls is None:
+        return ''
+    obj = cls()
+    try:
+        obj.ParseFromString(prop or b'')
+    except Exception:
+        return ''
+    parts = [obj.placeHolder or '']
+    parts += [option.text or '' for option in obj.options]
+    confirm = obj.confirm
+    if confirm is not None:
+        parts += [confirm.text or '', confirm.confirm or '']
+    return ' '.join(part for part in parts if part)
 
 def _element_link(element: dict) -> str:
     """富文本元素里的链接地址。"""
@@ -322,19 +404,6 @@ def _read_varint(data: bytes, index: int) -> tuple[int, int]:
         shift += 7
         if not byte & 0x80:
             return value, index
-
-
-def _rich_first(rich_text: dict) -> tuple[str, str]:
-    """富文本里的第一段文字和第一个链接。"""
-    text = link = ""
-    elements = ((rich_text.get("elements") or {}).get("dictionary") or {})
-    for element in elements.values():
-        tag = element.get("tag")
-        if not text and tag == 1:
-            text = _content(element.get("property"), "TextProperty")
-        if not link and tag in (6, 17):
-            link = _element_link(element)
-    return text, link
 
 
 def _system_text(content: dict) -> str:
@@ -453,7 +522,7 @@ def decode_push_messages(raw: bytes):
 def message_facts(message_type: int, content: dict) -> dict:
     """按类型挑出消息里"意图上重要"的信息（原始值；怎么拼成文本由调用方决定）。
 
-    非文字消息的正文就是这些事实拼出来的：文件/视频给名字，卡片给标题+副标题+描述+链接，
+    非文字消息的正文就是这些事实拼出来的：文件/视频给名字，卡片给标题/副标题/正文块/链接，
     视频会议给主题+起止时间，位置给名称+地址，名片给人名+用户 id，日程给参会人数。
     """
     try:
@@ -478,7 +547,6 @@ def _message_facts(message_type: int, content: dict) -> dict:
     if message_type == 14:
         header = content.get("cardHeader") or {}
         card = _card_json(content)
-        body_text, _ = _rich_first(content.get("richtext") or {})
         blocks = card_blocks(content)
         link = next((b.get("url") for b in blocks if b.get("type") == "link" and b.get("url")), "")
         if not link and card:
@@ -487,7 +555,8 @@ def _message_facts(message_type: int, content: dict) -> dict:
                 "title": header.get("title") or header.get("mainTitle") or _card_json_title(card),
                 "subtitle": header.get("subtitle") or _card_json_subtitle(card),
                 "theme": header.get("theme", ""),
-                "description": content.get("cardDesc", "") or body_text or _card_json_body(card),
+                # description 是飞书给的官方描述；正文在 blocks 里。
+                "description": content.get("cardDesc", ""),
                 # url 是内容里的链接；action_url 是卡片动作接口，不是给后端看的内容地址。
                 "url": link,
                 "action_url": content.get("actionUrl", ""),
@@ -517,9 +586,6 @@ def _message_facts(message_type: int, content: dict) -> dict:
     if message_type == 6:
         return {"kind": "系统消息", "text": _system_text(content)}
     return {"kind": f"{MSG_TYPE_NAMES.get(message_type, message_type)}类型消息"}
-
-
-_CARD_TEXT_TAGS = ("markdown", "plain_text", "div", "note", "text_tag")
 
 
 def _card_json(content: dict) -> dict:
@@ -555,29 +621,3 @@ def _card_json_subtitle(card: dict) -> str:
         return subtitle
     subtitle = _as_dict(subtitle)
     return subtitle.get("content") or subtitle.get("subtitle") or ""
-
-
-def _card_json_body(card: dict) -> str:
-    """卡片正文里第一段文字（markdown/plain_text/div/note 这类元素）。"""
-    for element in card.get("elements") or []:
-        if not isinstance(element, dict) or element.get("tag") not in _CARD_TEXT_TAGS:
-            continue
-        text = _card_text(element)
-        if text:
-            return text
-    return ""
-
-
-def _card_text(element: dict) -> str:
-    """卡片元素里的文字。"""
-    if isinstance(element.get("content"), str):
-        return element["content"]
-    text = element.get("text")
-    if isinstance(text, dict) and isinstance(text.get("content"), str):
-        return text["content"]
-    for child in element.get("elements") or []:
-        if isinstance(child, dict):
-            found = _card_text(child)
-            if found:
-                return found
-    return ""

@@ -497,14 +497,6 @@ class SpaceClient:
                 return str(node.get('token') or '')
         raise SpaceError('未找到云空间根目录')
 
-    def folder_children(self, folder_token: str) -> list[dict]:
-        """某个目录下的文件。"""
-        data = self._get('/space/api/explorer/folder/children/', folder_token=folder_token)
-        nodes = ((data.get('entities') or {}).get('nodes') or {})
-        return list(nodes.values())
-
-    # ---------- 云文档 ----------
-
     def wiki_node(self, wiki_token: str) -> dict:
         """知识库节点信息：真实文档 token、空间 id、标题、文档类型、父节点、负责人等。"""
         if wiki_token in self._wiki_nodes:

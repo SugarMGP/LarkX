@@ -99,12 +99,13 @@ def _attachment_name(disposition: str) -> str:
     return unquote(match.group(1).strip())
 
 
-def message_attachments(message_type: int, content: dict) -> list[dict]:
+def message_attachments(message_type: int, content: dict, blocks=None) -> list[dict]:
     """把消息内容里的资源整理成统一的附件列表：[{kind, key, name, size}]。
 
     kind 区分资源类型（图片/文件/视频/语音），因为它们的 key 前缀和下载方式都不一样；
     位置、名片这类没有资源的类型不进附件。
     正文富文本里内嵌的图片/视频（图文混排）也算附件，否则 key 就丢了。
+    卡片消息已经解析过块树时，把 blocks 传进来就不用再解析一遍。
     """
     content = content or {}
     if message_type == 5:
@@ -115,8 +116,9 @@ def message_attachments(message_type: int, content: dict) -> list[dict]:
         return [{"kind": "image", "key": key, "name": "", "size": 0}] if key else []
     if message_type == 14:
         # 卡片正文在 richtext 里（不是 richText），封面图也要算附件。
+        source = decoders.card_blocks(content) if blocks is None else blocks
         return [{"kind": "image", "key": block["key"], "name": "", "size": block.get("size", 0)}
-                for block in decoders.card_blocks(content)
+                for block in source
                 if block.get("type") == "image" and block.get("key")]
     if message_type in (3, 13):
         return _attachments("file", content)

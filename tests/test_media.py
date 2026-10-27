@@ -276,7 +276,9 @@ def test_message_facts_expose_the_important_fields():
                                                      "subtitle": {"content": "副标题"}}},
                                  "elements": [{"tag": "markdown", "content": "正文第一段"}]})
     facts = decoders.message_facts(14, protobuf_to_dict(card2))
-    assert (facts["title"], facts["subtitle"], facts["description"]) == ("新卡片", "副标题", "正文第一段")
+    assert (facts["title"], facts["subtitle"]) == ("新卡片", "副标题")
+    # 新卡片的正文在 blocks 里，description 只是飞书给的官方描述。
+    assert facts["blocks"][0]["text"] == "正文第一段"
 
     meeting = P.VideoChatContent()
     meeting.meetingCard.topic = "双周会"
@@ -390,7 +392,7 @@ def test_docs_container_is_not_rendered_as_a_document():
 
 
 def test_card_facts_use_the_real_card_structure():
-    """真实卡片：标题在 cardHeader，描述和链接在 richtext 里（actionUrl 是动作接口，不是给人点的）。"""
+    """真实卡片：标题在 cardHeader，正文和链接在 richtext 里（actionUrl 是动作接口，不是给人点的）。"""
     from larkx.proto import lark_all_pb2 as L
     text = L.entities.RichTextElement.TextProperty(content="Go to learn")
     link = L.entities.RichTextElement.LinkProperty(url="https://applink.feishu.cn/client/web_app/open?appId=x")
@@ -404,8 +406,48 @@ def test_card_facts_use_the_real_card_structure():
     }
     facts = decoders.message_facts(14, content)
     assert facts["title"] == "学习计划通知"
-    assert facts["description"] == "Go to learn"
+    assert facts["theme"] == "green"
+    assert facts["action_url"] == "https://internal-api.feishu.cn/lark/card/api/actionv2"
     assert facts["url"] == "https://applink.feishu.cn/client/web_app/open?appId=x"
+    assert [b["type"] for b in facts["blocks"]] == ["text", "link"]
+    assert facts["blocks"][0]["text"] == "Go to learn"
+    assert facts["blocks"][1]["url"] == "https://applink.feishu.cn/client/web_app/open?appId=x"
+
+
+def test_card_blocks_keep_link_text_select_and_markdown_rule():
+    """链接文字、下拉菜单、markdown 分隔线都要解析出来。"""
+    from larkx.proto import lark_all_pb2 as L
+    anchor = L.entities.RichTextElement.AnchorProperty(
+        href="https://example.com/a", content="点击查看")
+    option = L.entities.RichTextElement.MenuOption(text="小蓝一周")
+    select = L.entities.RichTextElement.SelectMenuProperty(placeHolder="请选择")
+    select.options.append(option)
+    content = {"richtext": {"elementIds": ["1", "2", "3"], "elements": {"dictionary": {
+        "1": {"tag": 6, "property": anchor.SerializeToString()},
+        "2": {"tag": 19, "property": select.SerializeToString()},
+        "3": {"tag": 14, "styleKeys": ["md_hr"], "property": b""},
+    }}}}
+    blocks = decoders.card_blocks(content)
+    assert blocks[0]["type"] == "link" and blocks[0]["text"] == "点击查看"
+    assert blocks[0]["url"] == "https://example.com/a"
+    assert blocks[1]["type"] == "select" and "小蓝一周" in blocks[1]["text"]
+    assert blocks[2]["type"] == "divider"
+
+
+def test_new_style_card_body_is_kept_as_text_blocks():
+    """新版卡片（jsonCard）没有 richtext，正文要从 jsonCard 里取出来。"""
+    content = {"jsonCard": json.dumps({
+        "config": {"header": {"title": {"content": "新人入职课程"}, "subtitle": {"content": "两周内"}}},
+        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "入职第一课"}},
+                     {"tag": "action", "actions": [{"tag": "button", "type": "primary",
+                                                   "text": {"content": "去学习"}}]}],
+    }, ensure_ascii=False)}
+    facts = decoders.message_facts(14, content)
+    assert facts["title"] == "新人入职课程"
+    assert facts["subtitle"] == "两周内"
+    assert [b["type"] for b in facts["blocks"]] == ["text", "button"]
+    assert facts["blocks"][0]["text"] == "入职第一课"
+    assert facts["blocks"][1]["text"] == "去学习"
 
 
 def test_system_message_fills_the_template():

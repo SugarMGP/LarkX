@@ -43,12 +43,12 @@ def test_group_and_p2p_chat_requests_differ_in_type(monkeypatch):
     assert (p2p.type, list(p2p.chatterIds)) == (1, ["9"])
 
 
-def test_send_msg_uses_generated_cid_and_raises_unconfirmed(monkeypatch):
+def test_send_message_request_uses_generated_cid_and_raises_unconfirmed(monkeypatch):
     import larkx.client as client_module
     monkeypatch.setattr(client_module, "generate_request_cid", lambda: "sdk-cid")
     c = make_client(monkeypatch, reply=P.Packet().SerializeToString())
     with pytest.raises(SendUnconfirmed) as error:
-        c.send_msg("hello", "c1")
+        c.send_message_request(P.PutMessageRequest())
     assert error.value.cid == "sdk-cid"
 
 

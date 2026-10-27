@@ -247,7 +247,7 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 |---|---|
 | 3/13 文件、15 视频 | `kind` `name` |
 | 7 语音、5 图片、10 表情 | `kind` |
-| 14 卡片 | `kind` `title` `subtitle` `description` `url`（老卡片取 cardHeader，新卡片取 jsonCard：标题/副标题在 `config.header`，正文是第一个 markdown/plain_text/div/note 元素；链接依次找 `actionUrl`、richtext 里的 anchor/link、jsonCard 里第一个 url） |
+| 14 卡片 | `kind` `title` `subtitle` `theme` `description` `url` `action_url` `blocks`（标题取 cardHeader，新卡片取 jsonCard 的 `config.header`；`description` 只是飞书给的官方描述，**正文在 `blocks` 里**；`url` 只放内容里的链接，`action_url` 是卡片动作接口，别混） |
 | 19 视频会议 | `kind` `topic` `start_ms` `end_ms` |
 | 20 位置 | `kind` `name` `description` |
 | 23 名片 | `kind` `name` `user_id`（域账号由下游按用户缓存补） |
@@ -298,8 +298,10 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 
 ### 解析与转发（LarkX 提供，connector 只拼文本）
 
-- `decoders.card_blocks(content)`：把卡片正文（`richtext` 块树）按展示顺序拍平成块列表——`text`（带 `bold`/`italic`/`link`）、`image`（`key`/`size`）、`button`（`text`/`action_id`/`mode`）、`link`（`text`/`url`）、`at`、`divider`。容器块被展开；按钮/链接的文字在子元素里，已并进块本身。
-- `decoders.message_facts(14, …)` 现在给卡片补了 `theme`、`blocks`、`action_url`，并且 **`url` 只放内容里的链接**（`actionUrl` 是卡片动作接口 `…/lark/card/api/actionv2`，不是给下游看的内容地址）。
+- `decoders.card_blocks(content)`：把卡片正文按展示顺序拍平成块列表——`text`（带 `bold`/`italic`/`code`/`link`）、`image`（`key`/`size`）、`button`（`text`/`action_id`/`mode`）、`link`（`text`/`url`）、`at`、`divider`、`select`。容器块被展开；`group` 标出顶层块，调用方用它分段。
+  - 老卡片（`cardHeader` + `richtext` 块树）按块树展开：`tag=1` 文本、`tag=2` 图片、`tag=5` @人、`tag=6` 链接（**文字在 `AnchorProperty.content` 里**）、`tag=11` 按钮、`tag=17` 整块链接、`tag=19` 下拉菜单（`placeHolder` + `options` + `confirm`）、`tag=32`/`tag=14`+`md_hr` 分隔线、`tag=7/8/9/30/31` 行内样式（加粗/斜体/下划线/代码，标记传给子文本）。
+  - 新版卡片（`jsonCard`，没有 `richtext`）按 `elements` 里的文字、按钮、图片拍平成块。
+- `decoders.message_facts(14, …)` 现在给卡片补了 `theme`、`blocks`、`action_url`，并且 **`url` 只放内容里的链接**（`actionUrl` 是卡片动作接口 `…/lark/card/api/actionv2`，不是给下游看的内容地址）；`description` 现在只是飞书给的官方描述（`cardDesc`），正文一律走 `blocks`。
 - `media.message_attachments` 支持 type=14：卡片正文在 `richtext`（**不是 `richText`，少个 h**），里面的图要算附件（key 形如 `img_v2_…`/`img_v3_…`，都能按 `download/messages/{message_id}/keys/{key}` 下载）。
 - `LarkClient.forward_message(chat_ids, message_id, cid=None) -> str`：原样转发一条消息，返回新消息 id。`messages.PutTransmitMessageRequest` **必须带 `cids` map**（键=chat_id、值=cid，缺了网关回 400 `CIDs required`），响应里 `messages[chat_id].id` 是新消息 id。
 

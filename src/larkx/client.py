@@ -175,14 +175,6 @@ class LarkClient:
             raise NetworkError(str(e)) from e
         return resp.content
 
-    def send_msg(self, text: str, chat_id: str, cid: str=None, reply_to: str=None):
-        """发送文本；reply_to 是引用回复（被回复消息 id）；cid 是幂等键，由调用方生成并在重试时复用。"""
-        packet_cid = cid or generate_request_cid()
-        pkt = builders.build_send_message_packet(
-            text, str(chat_id), generate_long_request_id(), reply_to=reply_to, cid=packet_cid,
-        )
-        return self._send_packet(pkt, packet_cid)
-
     def send_image(self, chat_id: str, image_key: str, cid: str=None, reply_to: str=None):
         """发送图片；image_key 由 media.upload_image 上传得到；cid 是幂等键。"""
         packet_cid = cid or generate_request_cid()
