@@ -287,6 +287,30 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 - `thriftMessage` 塞卡片原始 bytes → 网关 502 `call kite service fail`。
 - 按钮跳转 URL：`actionUrl` 直接 POST 报 `code 300000`（参数不全），`openplatform.v1.*` 那批卡片/通用卡片命令在协议资产里根本不存在。
 
+## 协议资产怎么升级（网页协议会变，别手改 pb2）
+
+`proto/lark_all_pb2.py`（消息定义）和 `proto/cmd_map.json`（命令号↔类型）是**从飞书网页端提取**的，不是手写的。飞书发版后网页协议就变，资产会过期。提取管线在 `feishu-demo/vendor/lark-agent-x-ts/scripts/proto-pipeline/`（本仓库这版资产就是那个 TS 项目 2026-07-25 版的产物，字节级一致）。
+
+升级流程（要 `bun`；编译 Python 端要 `grpcio-tools==1.69.0`，它带的 protoc 是 29.0，跟运行时 protobuf 5.29 对齐）：
+
+1. **拿 chunk**：网页端的 webpack chunk 映射在 worklet 运行时里。**不用开浏览器**——当前版本直接从 `6923.<hash>.js` 里就能解出全部 365 个 chunk 的 id→hash（正则 `\.u=\w+=>"static\/js\/"\+\w+\+"\."\+\{([^{}]+)\}\[\w+\]\+"\.js"`），再按 `https://sf1-scmcdn-cn.feishucdn.com/obj/feishu-static/ee/web-client-next/p/static/js/{id}.{hash}.js` 全量下载。
+2. **抽 schema 和 cmd**：跑 vendor 的 `extract.ts`——schema 来自 `register("ns","Name",{...})` 调用，cmd 映射来自 `"5|messages.PutMessageRequest|messages.PutMessageResponse|..."` 这种字符串。
+3. **生成 .proto**：跑 vendor 的 `gen-protos.ts` → `lark_all.proto`。
+4. **编译成 Python**：`python -m grpc_tools.protoc -I. --python_out=<dir> lark_all.proto`。**grpcio-tools 必须用 1.69.0**：新版带的 protoc 是 35/6.x，生成的代码会被 protobuf 5.29 运行时拒绝（`ValidateProtobufRuntimeVersion`）。
+5. **生成 cmd_map**：跑 vendor 的 `gen-cmd-table.ts`；**再用旧 cmd_map 兜底**——网页端下线某个命令后 cmd 字符串就没了，但 proto 类型还在，直接丢会让人调不了。
+6. **验证**：`uv run pytest`，再用真账号把每个封装方法调一遍，新旧资产各跑一次逐项对比输出。
+
+2026-10-27 这次升级（对照 2026-07-25 版）的差异：
+
+| 项 | 结果 |
+|---|---|
+| 类型数 | 11028 → 11114（新增 86 个，含新命名空间 `lark.aily`），**没有类型丢失** |
+| 字段 | 新增 39 个；**删除 0、改字段号 0、改名 0**。只有 1 处类型指向变了：`feed.PullFeedCardsResponse.AiKnowledgeIdentityEntry.value` 从 `ai_knowledge.Identity` 改成 `ai_knowledge.IdentityForFeed`（后者多一个 `IdentityBytes` 字段，是加法） |
+| cmd | by_req 2202 → 2235（新增 33 个请求类型）；**已有命令的 cmd 号和响应类型一个都没变** |
+| 实测 | 13 个封装方法的真账号冒烟（取会话/取消息/取收件箱/群成员/资料/发消息/编辑/已读/撤回）新旧输出逐项对比：差异全是新增字段（`chatChatterVersion`、`subType`、`feedCardField.priorityInfo` 等）和服务端数据本身变化（图片 CDN 域名、消息位置），**解析结果完全一致** |
+
+用到的类型有变化，注意：`chats.PullChatsByIdsRequest` 新增 `needViewerPolicies`、响应多 `viewerPolicies`（不传就没事，传了会改变返回结构）；`messages.PutMessageRequest.Content` 新增 `fileAttachments`；`messages.EditMessageRequest.Content` 新增 `attachmentUpdate`。
+
 ## 不要留没人用的封装
 
 `LarkClient` 的方法如果只有自己那半个调用方在用，就是负债：会烂掉，还会被下游当成可用能力直接调。删掉比留着好。判断"没人用"要 grep 整个仓库（含 tests）和下游仓库。
