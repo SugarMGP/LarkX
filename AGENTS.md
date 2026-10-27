@@ -271,6 +271,31 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 - **卡片封面图现在不在 attachments 里**：`media.message_attachments` 对 type=14 取的是 `content["richText"]`，而卡片字段叫 `richtext`（少个 h），取不到
 - `actionUrl`（`https://internal-api.feishu.cn/lark/card/api/actionv2`）是**卡片动作接口**，不是内容链接，别当卡片地址给下游
 
+### 大范围实测（2026-10-27：72 个会话 / 6242 条消息 / 258 张卡片）
+
+| 形态 | 数量 | 说明 |
+|---|---|---|
+| 有完整正文 | 163 | 平均 9.2 个文本节点；105 张带按钮、91 张带图、72 张带链接 |
+| 只有降级提示 | 79 | 一个 markdown 块里是 `Upgrade to the latest app version to view the content` + 一张封面图，**正文不在消息里** |
+| 纯图片无文本 | 16 | 只有图（小程序/应用卡片） |
+
+**这个租户没有新式卡片**：258 张卡里 `jsonCard` / `openCardContent` / `universalCardEntity` / `cardDesc` **全是 0**，清一色 `cardVersion=2` 的老卡片（`cardHeader` + `richtext` 块树）。新式卡片就靠这三个字段带内容（`jsonCard` id=20 整张卡片 JSON、`openCardContent` id=17 bytes、`universalCardEntity` id=34 bytes），出现时前两个直接就是内容。
+
+`cardPackInfo`（19 张非空）**只装 i18n**（contentLanguage / localeInfo / allLocales），`cardText` / `replacedJsonCard` / `bodySummary` / `headerSummary` 都是空的——不是藏正文的地方。
+
+老卡片正文全在 `richtext.elements.dictionary` 块树里：
+
+- `tag=1` TEXT → `TextProperty{content}`；`tag=5` AT → `AtProperty{userId,content}`；`tag=6` 链接 → `LinkProperty{url,iosUrl,androidUrl,pcUrl}`
+- `tag=2` IMG → `ImageProperty{token,originKey,…}`，图片 key 是 `img_v3_…`，照常能下载
+- `tag=11` BUTTON → `ButtonProperty{actionId,disable,active,confirm,loading,mode}`，**没有跳转 URL**
+- 块的语义靠 `styleKeys`：`block_markdown`、`block_div_txt`、`block_action_p_*`、`block_columnset_p`、`block_column_p`、`block_image_p`、`block_hr`、`block_note_p`、`block_button_txt_default`…
+- 头部还有 `cardHeader{title,theme,style,icon}`、`appId`、`tenantId`、`botId`、`cardId`、`version`、`minVersion`、`source`、`cardSchema`、`jsonCardI18nInfo`、`extraInfo`
+
+**按钮的跳转地址只能在点击时由服务端解析**（消息里没有）。网页端的做法（已逆向）：`POST {card.actionUrl}`（默认 `https://internal-api.feishu.cn/lark/card/api/actionv2`），body 是 `{"common":{"uid":用户id,"mid":消息id},"action":{…按钮参数…}}`，响应 `message` 是 **base64 的 JSON**（`type`/`content`/`i18n`），另有 `toast`/`card_entity` 两个字段。
+
+- 卡片发出超过 **14 天（有的 30 天）**就返回「该卡片发送时间已超过 N 天，无法进行互动」；点太频繁返回「操作太频繁了，请稍后重试」。
+- 手上样本卡的 action 全部过期，**没拿到过真实 openUrl**——「离线拿到按钮目标 URL」这条路没走通。
+
 **原样发出去只有一条路：转发。**
 
 | 命令 | cmd | 参数 |
