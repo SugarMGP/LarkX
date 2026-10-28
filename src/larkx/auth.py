@@ -143,7 +143,8 @@ class LarkAuth:
 QR_STATUS_NAMES = {0: "SUCCESS", 1: "等待扫码", 2: "已扫码待确认", 3: "已取消", 4: "错误", 5: "已过期"}
 
 
-def _qr_session(region: Region) -> requests.Session:
+def qr_session(region: Region) -> requests.Session:
+    """扫码登录用的 HTTP 会话（网页端头）；恢复扫码轮询时也要用同一个会话。"""
     s = requests.Session()
     s.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
@@ -161,7 +162,7 @@ def _qr_session(region: Region) -> requests.Session:
 class QrLogin:
     def __init__(self, region: Region=None):
         self.region = region or get_region(load_config()['region'])
-        self.session = _qr_session(self.region)
+        self.session = qr_session(self.region)
         r = self.session.post(f"{self.region.accounts_origin}/accounts/qrlogin/init", json={"redirect_uri": self.region.qr_redirect_uri}, timeout=15)
         j = r.json()
         if j.get("code") != 0:
