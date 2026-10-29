@@ -73,8 +73,8 @@ def open_message_resource(auth: LarkAuth, key: str, message_id: str = '') -> tup
     上游响应是流式的，调用方负责 close；key 不存在时上游回 400，这里抛 KeyError。
     content-type 按上游 Content-Disposition 里的文件名判断（飞书对视频也给 text/plain）。
     """
-    if key.startswith("v3_"):
-        # 表情包、头像这类 v3_ 开头的资源不在消息里，走文件服务的静态资源口。
+    if key.startswith(("v2_", "v3_")):
+        # 表情包、头像这类资源不在消息里，走文件服务的静态资源口。
         url = f'{auth.region.file_host}/static-resource/image/{key}'
     else:
         url = f'{auth.region.file_host}/download/messages/{message_id}/keys/{key}'

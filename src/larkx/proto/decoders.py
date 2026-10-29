@@ -284,6 +284,11 @@ def card_blocks(content: dict) -> list[dict]:
                 'user_id': _prop(prop, 'AtProperty', 'userId'), 'group': group,
             })
             return 0
+        if tag == 10:
+            blocks.append({
+                'type': 'emotion', 'key': _prop(prop, 'EmotionProperty', 'key'), 'group': group,
+            })
+            return 0
         if tag == 6:
             # 链接文字在 AnchorProperty.content 里，子元素只是兜底。
             text = child_text(element)
@@ -550,7 +555,9 @@ def _message_facts(message_type: int, content: dict) -> dict:
     if message_type == 5:
         return {"kind": "图片"}
     if message_type == 10:
-        return {"kind": "表情", "key": content.get("key", "")}
+        return {"kind": "表情", "key": content.get("key", ""),
+                "sticker_set_id": content.get("stickerSetId", ""),
+                "sticker_id": content.get("stickerId", "")}
     if message_type == 14:
         header = content.get("cardHeader") or {}
         card = _card_json(content)
@@ -648,6 +655,17 @@ def at_property(prop: bytes) -> dict:
     except Exception:
         return {}
     return {'user_id': obj.userId, 'name': (obj.content or '').removeprefix('@')}
+
+
+def emotion_property(prop: bytes) -> dict:
+    """内置表情的属性字节 -> {'key'}；不是表情元素就返回空。"""
+    cls = _entities().RichTextElement.EmotionProperty
+    obj = cls()
+    try:
+        obj.ParseFromString(prop or b'')
+    except Exception:
+        return {}
+    return {'key': obj.key}
 
 
 def parse_packet(content: bytes) -> dict:

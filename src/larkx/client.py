@@ -310,6 +310,20 @@ class LarkClient:
         return {str(key): str(value.get('name') or '')
                 for key, value in ((response or {}).get('chatters') or {}).items()}
 
+    def pull_emoji_resources(self) -> list[dict]:
+        """内置表情资源（key、各语言名称、图片 key）。"""
+        response = self.api('reactions.PullEmojiResourcesRequest', {'currentVersion': 0})
+        return list((response or {}).get('emojiResources') or [])
+
+    def pull_sticker_sets(self, sticker_set_ids: list[str]) -> dict[str, dict]:
+        """按套装 id 批量取表情包；返回 {stickerSetId: 套装}。"""
+        ids = [str(sticker_set_id) for sticker_set_id in sticker_set_ids if sticker_set_id]
+        if not ids:
+            return {}
+        response = self.api('sticker.PullStickerSetsByIDRequest', {'stickerSetsIds': ids})
+        return {str(sticker_set_id): sticker_set
+                for sticker_set_id, sticker_set in ((response or {}).get('stickerSets') or {}).items()}
+
     def pull_messages_by_positions(self, chat_id: str, positions: list[int]) -> dict:
         """按 position 窗口取消息，返回 {position: 消息}。"""
         response = self.api('messages.PullMessagesByPositionsRequest',

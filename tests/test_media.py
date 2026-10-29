@@ -66,6 +66,15 @@ def test_media_elements_use_placeholders():
     assert text == "[图片][表情][视频][文档]"
 
 
+def test_emotion_property_and_sticker_facts_keep_raw_keys():
+    prop = L.entities.RichTextElement.EmotionProperty(key="THUMBSUP").SerializeToString()
+    assert decoders.emotion_property(prop) == {"key": "THUMBSUP"}
+    assert decoders.emotion_property(b"\xff") == {}
+    assert decoders.message_facts(10, {
+        "key": "v2_sticker", "stickerSetId": "set1", "stickerId": "sticker1",
+    }) == {"kind": "表情", "key": "v2_sticker", "sticker_set_id": "set1", "sticker_id": "sticker1"}
+
+
 def test_image_and_file_packets_carry_the_uploaded_keys():
     image = builders.build_image_message_packet("img_v3_1", "c1", "req", cid="cid1")
     req = L.messages.PutMessageRequest(); req.ParseFromString(image.payload)
@@ -237,12 +246,17 @@ def test_card_blocks_keep_order_and_formatting():
     label = richtext.elements.dictionary["t4"]
     label.tag = 1
     label.property = L.entities.RichTextElement.TextProperty(content="点我").SerializeToString()
+    richtext.elementIds.append("t5")
+    emotion = richtext.elements.dictionary["t5"]
+    emotion.tag = 10
+    emotion.property = L.entities.RichTextElement.EmotionProperty(key="THUMBSUP").SerializeToString()
 
     blocks = decoders.card_blocks(protobuf_to_dict(card))
-    assert [b["type"] for b in blocks] == ["text", "image", "button"]
+    assert [b["type"] for b in blocks] == ["text", "image", "button", "emotion"]
     assert blocks[0]["text"] == "今日推荐" and blocks[0]["bold"] is True
     assert blocks[1]["key"] == "img_v3_abc" and blocks[1]["size"] == 1024
     assert blocks[2]["text"] == "点我" and blocks[2]["action_id"] == "convert|1"
+    assert blocks[3]["key"] == "THUMBSUP"
     # 卡片封面图也要算附件。
     assert media.message_attachments(14, protobuf_to_dict(card)) == [
         {"kind": "image", "key": "img_v3_abc", "name": "", "size": 1024}]
@@ -530,7 +544,7 @@ def test_system_message_fills_the_template():
 
 
 def test_sticker_is_an_attachment_and_uses_the_static_path(monkeypatch):
-    """表情包的 key 是 v3_ 开头，走文件服务静态资源口。"""
+    """表情包的 v2_/v3_ key 都走文件服务静态资源口。"""
     assert media.message_attachments(10, {"key": "v3_00mu_abc", "stickerId": "751"}) == [
         {"kind": "image", "key": "v3_00mu_abc", "name": "", "size": 0}]
     captured = {}
@@ -543,3 +557,7 @@ def test_sticker_is_an_attachment_and_uses_the_static_path(monkeypatch):
     _, content_type = media.open_message_resource(auth_stub(), "v3_00mu_abc", "m1")
     assert content_type == "image/gif"
     assert captured["url"].endswith("/static-resource/image/v3_00mu_abc")
+
+    _, content_type = media.open_message_resource(auth_stub(), "v2_sticker", "m1")
+    assert content_type == "image/gif"
+    assert captured["url"].endswith("/static-resource/image/v2_sticker")

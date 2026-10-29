@@ -151,6 +151,26 @@ def test_pull_chatter_names_batches_ids(monkeypatch):
     assert seen["chatId"] == 0 and seen["chatterIds"] == [1, 2]
 
 
+def test_pull_emoji_resources_returns_raw_resources(monkeypatch):
+    c = make_client(monkeypatch)
+    calls = []
+    monkeypatch.setattr(c, "api", lambda name, data=None, raw=None:
+                        calls.append((name, data)) or {"emojiResources": [{"key": "THUMBSUP"}]})
+    assert c.pull_emoji_resources() == [{"key": "THUMBSUP"}]
+    assert calls == [("reactions.PullEmojiResourcesRequest", {"currentVersion": 0})]
+
+
+def test_pull_sticker_sets_returns_sets_by_id(monkeypatch):
+    c = make_client(monkeypatch)
+    calls = []
+    monkeypatch.setattr(c, "api", lambda name, data=None, raw=None:
+                        calls.append((name, data)) or {"stickerSets": {"s1": {"stickerSetId": "s1"}}})
+    assert c.pull_sticker_sets(["s1", ""]) == {"s1": {"stickerSetId": "s1"}}
+    assert calls == [("sticker.PullStickerSetsByIDRequest", {"stickerSetsIds": ["s1"]})]
+    assert c.pull_sticker_sets([]) == {}
+    assert len(calls) == 1
+
+
 def test_get_user_profile_returns_none_without_name(monkeypatch):
     c = make_client(monkeypatch)
     monkeypatch.setattr(c, "api", lambda name, data=None, raw=None: {"email": "a@b.com"})
