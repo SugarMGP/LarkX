@@ -186,6 +186,19 @@ class LarkClient:
         pkt = builders.wrap_packet(5, request, generate_long_request_id())
         return self._send_packet(pkt, packet_cid)
 
+    def send_rich_message(self, chat_id: str, blocks, cid: str = None, reply_to: str = None) -> str:
+        """发送富文本消息（type=2 POST）。
+
+        blocks 是 connector 解析 markdown 后的 segment IR：块级 paragraph/heading/list/
+        quote/divider/code，行内 text/link/image/at；元素构造全在 builders.build_rich_text。
+        reply_to 是引用回复（rootId=parentId=被回复消息）。
+        """
+        packet_cid = cid or generate_request_cid()
+        req = builders.build_rich_message_request(
+            str(chat_id), blocks, cid=packet_cid, reply_to=reply_to)
+        pkt = builders.wrap_packet(5, req, generate_long_request_id())
+        return self._send_packet(pkt, packet_cid)
+
     def _send_packet(self, pkt, packet_cid: str) -> str:
         content = self._gateway_post(pkt)
         resp = decoders.parse_packet(content)

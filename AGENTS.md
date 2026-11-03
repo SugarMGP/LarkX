@@ -61,6 +61,9 @@ IM 网关：
 | `decoders.at_property(prop)` | AT 元素的 property 字节 → `{user_id, name}` |
 | `decoders.parse_packet(bytes)` / `decoders.parse_push_request(bytes)` | 网关响应 / 推送帧 → 字典 |
 | `builders.at_element(user_id, name)` / `builders.text_element(content)` | 富文本元素的 property 字节 |
+| `send_rich_message(chat_id, blocks, cid, reply_to)` | 发富文本消息（type=2），`blocks` 是 segment IR，见「富文本消息」一节 |
+| `builders.build_rich_text(blocks)` / `builders.build_rich_message_request(...)` | IR → `entities.RichText` / `PutMessageRequest` |
+| `builders.rich_text_plain(blocks)` | IR 的纯文本版本（给 `innerText` 用） |
 
 协议层的错误语义都在库里：`api()` 遇到 `status != 0` 抛 `ProtocolError`；空间接口的 HTTP 错误统一抛 `SpaceError`；`validate()` 里网络异常向上抛，不会被当成"凭证过期"。
 
@@ -208,7 +211,7 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 
 | type | 名称 | content 字段 | 实测 |
 |---|---|---|---|
-| 4 | TEXT 文字 | `richText`（可含 IMG 元素 → 图文混排） | ✅ |
+| 4 | TEXT 文字 | `richText`（可含 IMG 元素，但属性类型决定能不能渲染） | ✅ |
 | 2 | POST 富文本 | `title` + `richText` | ✅（带 IMG 元素会 400） |
 | 5 | IMAGE 图片 | `cryptoToken`=image key | ✅ |
 | 3 / 13 | FILE / CLOUD_FILE | `fileKey` `fileName` `fileMime` `fileSize` | ✅ |
@@ -224,7 +227,51 @@ changeset 串格式（数字是 **base36 小写**，`0-9a-z`，`k`=20、`j`=19�
 | 12/16/18 | 日历系列 | `calendarEvent` `calendarType` | 依赖飞书日历对象 |
 | 6/8/17/19/22/25 | 系统/邮件/红包/会议/商业化红包/文件夹 | 服务端产生 | 用不上 |
 
-**图文混排**（一条消息里既有文字又有图片）：用 type=4 的普通文字消息，`richText` 里放一个 tag=2(IMG) 的元素，元素的 `property` 是 `entities.ImImage{imageKey, fsUnit, crypto}`，并把元素 id 放进 `richText.imageIds`；实测发出去、收回来是"看图 [图片]"一条消息。
+**图文混排**（一条消息里既有文字又有图片）有两条路，别混：
+
+- **type=2 POST（推荐，客户端截图验证过）**：`DOCS(22) > FIGURE(4) > IMG(2)`，IMG 的 `property` 是 `entities.RichTextElement.ImageProperty{token=img_v3_…}`。真实入站消息就是这个形状。
+- **type=4 TEXT**：`richText` 里放 tag=2(IMG) 元素，`property` 得是 `entities.ImImage{imageKey, fsUnit, crypto}` 并把元素 id 放进 `richText.imageIds`。**注意**：同一位置换成 `RichTextElement.ImageProperty` 时服务端照收（回读结构完整），但客户端只显示图片占位、不渲染——属性类型选错是静默失败，不会报错。
+
+## 富文本消息（type=2 POST）：Markdown 渲染结果的构造
+
+下游把 markdown 解析成 **segment IR** 交给 `send_rich_message`，LarkX 负责 IR → 元素树。IR 形状：
+
+```python
+block = {"type": "paragraph"|"heading"|"list"|"quote"|"divider"|"code", ...}
+span  = text | link | image | at
+# text:  {"type":"text","text":str,"bold":bool,"italic":bool,"underline":bool,"strike":bool,"code":bool}
+# link:  {"type":"link","text":str,"href":str}     # text 为空时回退成 href
+# image: {"type":"image","src":str}                # img_v3_… 或 http(s) URL（下载在上游）
+# at:    {"type":"at","user_id":str,"name":str}
+```
+
+**结构（真账号 + 客户端截图验证）**：根必须是 **DOCS(22)**，图片必须包在 **FIGURE(4)** 里，消息类型必须是 **type=2**。
+
+```
+DOCS(22)
+├─ P(3) ─┬─ TEXT(1)              property=TextProperty, style 里放格式
+│        ├─ A(6)                 property=AnchorProperty{href,content,textContent}
+│        └─ AT(5)                property=AtProperty{userId,content}
+├─ FIGURE(4) > IMG(2)            property=ImageProperty{token=img_v3_…}
+├─ UL(26)/OL(27) > LI(28)
+├─ QUOTE(29) > P(3)
+└─ CODE_BLOCK(31)                property=CodeBlockProperty{language,content}
+```
+
+**四条硬规则，违反就出问题：**
+
+1. **容器元素必须把 `property` 显式写成空字节**（P/DOCS/FIGURE/QUOTE/UL/OL/LI）。不写网关回 `400 PB payload in packet unmarshal failed`——proto3 的 `optional bytes` 有显式 presence，「空」和「没设」在线上不一样。
+2. **加粗/斜体/下划线/删除线是 TEXT 元素的 `style` 映射**，不是独立元素：`fontWeight=bold`、`fontStyle=italic`、`-lark-textDecoration=underline|lineThrough`。用 tag 7/8/9 会变成「本版本不支持查看这部分内容」。
+3. **`imageIds`/`anchorIds`/`atIds` 里放元素 id**，不是图片 key 或 user id。
+4. **A 元素的 `content`/`textContent` 不能为空**，否则客户端只剩预览卡、链接文字完全不可见。
+
+**服务端会改写/降级的东西**（实测，别去修）：
+
+- **标题 H1/H2/H3(23/24/25) 被降级成普通段落**，分隔线 HR(32) 被降级成空段落，行内代码 CODE(30) 被抹平成普通文字。要强调标题就在下游用「加粗段落」替代。
+- **裸 URL 自动 linkify**：把 `https://…` 放普通 TEXT 里，服务端会自己拆出 A 元素并展开预览卡，比手写 `[文字](url)` 效果更好。所以下游不需要识别裸链接。
+- **AT 的 `content` 由服务端按 `userId` 重算**：发 `@阎昱灵(admin)` 收回来是 `@阎昱灵`。所以只需要 `userId`，`content` 只是兜底。
+- **`atUserIdList` 只收 int64**：`@所有人` 的 `userId="all"` 塞不进去，跳过；实测不填它也能正常发送。
+- **CODE_BLOCK(31) 的正文只放 `property.content`**，再挂一个 TEXT 子元素会被 `rich_text_elements` 渲染两遍。
 
 ## 消息资源：上传、key、下载
 
