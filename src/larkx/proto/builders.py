@@ -155,7 +155,7 @@ def decode_put_message_response(content: bytes) -> str:
 _RICH_TAGS = {
     "docs": 22, "paragraph": 3, "figure": 4, "quote": 29, "divider": 32,
     "h1": 23, "h2": 24, "h3": 25, "ul": 26, "ol": 27, "li": 28,
-    "text": 1, "image": 2, "at": 5, "link": 6, "code": 30, "code_block": 31,
+    "text": 1, "image": 2, "at": 5, "link": 6, "code": 30, "markdown": 49,
 }
 
 # CodeBlockProperty.Language
@@ -230,11 +230,29 @@ class _RichTextWriter:
         return self.node("code", None, [child])
 
     def code_block(self, content: str, language: str) -> str:
-        prop = _all().entities.RichTextElement.CodeBlockProperty()
-        prop.language = CODE_LANGUAGES.get(str(language or "").lower(), 0)
-        prop.content = content
-        # 正文只放 property：再挂一个 TEXT 子元素会被解码器渲染两遍。
-        return self.node("code_block", prop.SerializeToString())
+        """代码块用 MARKDOWN(49) 元素装一段围栏代码，不要用 CODE_BLOCK(31)/CODE_BLOCK_V2(37)。
+
+        真账号截图实测（三种写法发到同一个群对比）：
+        - tag 31 + CodeBlockProperty → 客户端渲染成只有一个行号槽的**空框**，正文完全不显示；
+        - tag 31 + upgradeElement=V2 → 一样是空框（服务端把 upgradeElement 丢掉了）；
+        - tag 37 + CodeBlockV2Property → 能显示代码，但只有行号和等宽字，没有语言栏、没有复制按钮、没有语法高亮；
+        - **tag 49 + MarkdownProperty("```lang\n…\n```") → 语言栏、复制按钮、语法高亮齐全**，和客户端自己发的一致。
+
+        所以按 tag 49 发，正文就是围栏代码块本身。
+        """
+        language = str(language or "").strip().lower()
+        fence = "```"
+        body = "\n".join(_code_lines(content))
+        return self.node("markdown", _all().entities.RichTextElement.MarkdownProperty(
+            content=f"{fence}{language}\n{body}\n{fence}").SerializeToString())
+
+
+def _code_lines(content: str) -> list[str]:
+    """按行切分；去掉结尾的空行，中间的空行保留。"""
+    lines = str(content or "").split("\n")
+    while len(lines) > 1 and not lines[-1].strip():
+        lines.pop()
+    return lines
 
 
 def _spans(writer: _RichTextWriter, spans) -> list[str]:

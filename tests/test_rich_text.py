@@ -8,7 +8,7 @@
 from types import SimpleNamespace
 
 from larkx.client import LarkClient
-from larkx.proto import builders, lark_all_pb2 as P
+from larkx.proto import builders, decoders, lark_all_pb2 as P
 
 
 def element(rich, element_id):
@@ -107,19 +107,40 @@ def test_heading_list_quote_and_code_block_map_to_their_tags():
         {"type": "divider"},
         {"type": "code", "language": "python", "text": "print(1)"},
     ])
-    # DOCS > H2>TEXT / OL>LI>TEXT / QUOTE>P>TEXT / HR / CODE_BLOCK
-    assert tags(rich) == [22, 24, 1, 27, 28, 1, 29, 3, 1, 32, 31]
+    # DOCS > H2>TEXT / OL>LI>TEXT / QUOTE>P>TEXT / HR / MARKDOWN(代码块)
+    assert tags(rich) == [22, 24, 1, 27, 28, 1, 29, 3, 1, 32, 49]
 
 
-def test_code_block_keeps_content_in_property_only():
-    rich = builders.build_rich_text([{"type": "code", "language": "python", "text": "print(1)"}])
-    code = [el for tag, el in walk(rich, None) if tag == 31][0]
-    prop = P.entities.RichTextElement.CodeBlockProperty()
-    prop.ParseFromString(code.property)
-    assert prop.content == "print(1)"
-    assert prop.language == builders.CODE_LANGUAGES["python"]
-    # 再挂一个 TEXT 子元素会被解码器渲染两遍。
+def test_code_block_is_sent_as_a_fenced_markdown_element():
+    rich = builders.build_rich_text([
+        {"type": "code", "language": "python", "text": "def hello():\n    print('hi')"}])
+    code = [el for tag, el in walk(rich, None) if tag == 49][0]
+    # 只有 MARKDOWN(49) 能渲染出语言栏/复制按钮/高亮；CODE_BLOCK(31) 是空框，CODE_BLOCK_V2(37) 没有高亮。
     assert not code.childIds
+    assert not code.upgradeElement
+    prop = P.entities.RichTextElement.MarkdownProperty()
+    prop.ParseFromString(code.property)
+    assert prop.content == "```python\ndef hello():\n    print('hi')\n```"
+    assert decoders.render_element({'tag': 49, 'property': code.property}) == prop.content
+
+
+def test_code_block_without_language_and_with_lang_alias():
+    rich = builders.build_rich_text([{"type": "code", "text": "ls -l"}])
+    prop = P.entities.RichTextElement.MarkdownProperty()
+    prop.ParseFromString([el for tag, el in walk(rich, None) if tag == 49][0].property)
+    assert prop.content == "```\nls -l\n```"
+
+    rich = builders.build_rich_text([{"type": "code", "language": "PY", "text": "x"}])
+    prop = P.entities.RichTextElement.MarkdownProperty()
+    prop.ParseFromString([el for tag, el in walk(rich, None) if tag == 49][0].property)
+    assert prop.content == "```py\nx\n```"
+
+
+def test_code_block_drops_trailing_blank_lines_and_keeps_blank_lines_inside():
+    rich = builders.build_rich_text([{"type": "code", "text": "a\n\nb\n\n"}])
+    prop = P.entities.RichTextElement.MarkdownProperty()
+    prop.ParseFromString([el for tag, el in walk(rich, None) if tag == 49][0].property)
+    assert prop.content == "```\na\n\nb\n```"
 
 
 def test_rich_request_is_a_post_with_cid_and_reply():

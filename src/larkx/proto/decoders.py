@@ -125,10 +125,22 @@ def render_element(element: dict) -> str:
     if tag == 8:
         content = _content(prop, 'ItalicProperty')
         return f'*{content}*' if content else ''
+    if tag == 37:
+        return _code_block_v2_text(prop)
     class_name = _CONTENT_CLASSES.get(tag)
     if class_name:
         return _content(prop, class_name)
     return TAG_PLACEHOLDERS.get(tag, '')
+
+
+def _code_block_v2_text(prop: bytes) -> str:
+    """CODE_BLOCK_V2 的正文是按行存的：contents[].contents[].content。"""
+    obj = _elements().entities.RichTextElement.CodeBlockV2Property()
+    try:
+        obj.ParseFromString(prop)
+    except Exception:
+        return ''
+    return '\n'.join(''.join(piece.content for piece in line.contents) for line in obj.contents)
 
 
 def _content(prop: bytes, class_name: str) -> str:

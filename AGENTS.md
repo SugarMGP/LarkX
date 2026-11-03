@@ -258,7 +258,7 @@ DOCS(22)
 ├─ FIGURE(4) > IMG(2)            property=ImageProperty{token=img_v3_…}
 ├─ UL(26)/OL(27) > LI(28)
 ├─ QUOTE(29) > P(3)
-└─ CODE_BLOCK(31)                property=CodeBlockProperty{language,content}
+└─ MARKDOWN(49)                  property=MarkdownProperty{content="```lang\n…\n```"}  ← 代码块
 ```
 
 **四条硬规则，违反就出问题：**
@@ -274,7 +274,7 @@ DOCS(22)
 - **裸 URL 自动 linkify**：把 `https://…` 放普通 TEXT 里，服务端会自己拆出 A 元素并展开预览卡，比手写 `[文字](url)` 效果更好。所以下游不需要识别裸链接。
 - **AT 的 `content` 由服务端按 `userId` 重算**：发 `@阎昱灵(admin)` 收回来是 `@阎昱灵`。所以只需要 `userId`，`content` 只是兜底。
 - **`atUserIdList` 只收 int64**：`@所有人` 的 `userId="all"` 塞不进去，跳过；实测不填它也能正常发送。
-- **CODE_BLOCK(31) 的正文只放 `property.content`**，再挂一个 TEXT 子元素会被 `rich_text_elements` 渲染两遍。
+- **代码块必须用 MARKDOWN(49) 装围栏代码，别用 CODE_BLOCK**：同一个群里发三种写法对比截图，`CODE_BLOCK(31)` 渲染成只有一个行号槽的**空框**（正文完全不显示），`CODE_BLOCK_V2(37)` 能显示代码但只有行号和等宽字（没有语言栏/复制按钮/语法高亮），`MARKDOWN(49)` + `"```lang\n<代码>\n```"` 才是完整效果（语言栏、复制按钮、高亮齐全）。`CODE_BLOCK(31)` 加 `upgradeElement=V2` 也没用——服务端会把 `upgradeElement` 丢掉。
 
 ## 话题群（THREAD_V2）：识别、发进话题、读话题
 
