@@ -21,8 +21,13 @@ def wrap_packet(cmd: int, payload_msg, request_id: str):
 
 
 def build_message_request(msg_type: int, chat_id: str, text: str = '', reply_to: str = None,
-                          cid: str = None):
-    """组装一条消息请求；用的是完整协议类型，调用方可以再往正文里插真实 AT 节点。"""
+                          cid: str = None, thread_id: str = None):
+    """组装一条消息请求；用的是完整协议类型，调用方可以再往正文里插真实 AT 节点。
+
+    thread_id 是话题首帖的消息 id。THREAD_V2 话题群里回复进话题靠 rootId+parentId **成对**
+    出现（只给 rootId 会新开一个话题），且**不能**设 isReplyInThread——那样网关回
+    400 `replyInThread not support chat`。thread_id 优先于 reply_to。
+    """
     from . import lark_all_pb2 as L
     req = L.messages.PutMessageRequest()
     req.type = msg_type
@@ -30,7 +35,9 @@ def build_message_request(msg_type: int, chat_id: str, text: str = '', reply_to:
     req.cid = str(cid) if cid else generate_request_cid()
     req.isNotified = 1
     req.version = 1
-    if reply_to:
+    if thread_id:
+        req.rootId = req.parentId = str(thread_id)
+    elif reply_to:
         req.rootId = str(reply_to)
         req.parentId = str(reply_to)
     if text:
@@ -356,15 +363,18 @@ def build_rich_text(blocks):
     return writer.rt
 
 
-def build_rich_message_request(chat_id: str, blocks, cid: str = None, reply_to: str = None):
-    """组装一条富文本消息（type=2 POST）。"""
+def build_rich_message_request(chat_id: str, blocks, cid: str = None, reply_to: str = None,
+                               thread_id: str = None):
+    """组装一条富文本消息（type=2 POST）。thread_id 语义同 build_message_request。"""
     req = _all().messages.PutMessageRequest()
     req.type = 2
     req.chatId = str(chat_id)
     req.cid = str(cid) if cid else generate_request_cid()
     req.isNotified = 1
     req.version = 1
-    if reply_to:
+    if thread_id:
+        req.rootId = req.parentId = str(thread_id)
+    elif reply_to:
         req.rootId = str(reply_to)
         req.parentId = str(reply_to)
     req.content.richText.CopyFrom(build_rich_text(blocks))

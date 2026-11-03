@@ -64,6 +64,9 @@ IM 网关：
 | `send_rich_message(chat_id, blocks, cid, reply_to)` | 发富文本消息（type=2），`blocks` 是 segment IR，见「富文本消息」一节 |
 | `builders.build_rich_text(blocks)` / `builders.build_rich_message_request(...)` | IR → `entities.RichText` / `PutMessageRequest` |
 | `builders.rich_text_plain(blocks)` | IR 的纯文本版本（给 `innerText` 用） |
+| `pull_threads_by_positions(chat_id, positions)` / `pull_threads_by_ids(thread_ids)` | 取话题（`{threads, rootMessages, ...}`），只对话题群有效 |
+| `pull_thread_messages_by_positions(thread_id, chat_id, positions)` | 取话题内消息 `{thread_position: 消息}` |
+| `mark_threads_read(chat_id, thread_ids, read_position)` | 按话题标已读 |
 
 协议层的错误语义都在库里：`api()` 遇到 `status != 0` 抛 `ProtocolError`；空间接口的 HTTP 错误统一抛 `SpaceError`；`validate()` 里网络异常向上抛，不会被当成"凭证过期"。
 
@@ -272,6 +275,39 @@ DOCS(22)
 - **AT 的 `content` 由服务端按 `userId` 重算**：发 `@阎昱灵(admin)` 收回来是 `@阎昱灵`。所以只需要 `userId`，`content` 只是兜底。
 - **`atUserIdList` 只收 int64**：`@所有人` 的 `userId="all"` 塞不进去，跳过；实测不填它也能正常发送。
 - **CODE_BLOCK(31) 的正文只放 `property.content`**，再挂一个 TEXT 子元素会被 `rich_text_elements` 渲染两遍。
+
+## 话题群（THREAD_V2）：识别、发进话题、读话题
+
+**识别看 `chat.chatMode`，不是 `chat.type`。** 实测话题群的 `chat.type` 恒为 2（GROUP），
+`entities.Chat.Type` 里的 `TOPIC_GROUP=3` 是历史遗留、消息里从来不会出现；真信号是
+`chat.chatMode`：1=DEFAULT / 2=THREAD / 3=THREAD_V2。消息推送里的 `chatType` 也是 2，
+所以**不能**靠消息字段判断是不是话题群，得回头查会话对象。
+
+**发进话题：`rootId` 和 `parentId` 必须成对**，而且**不要设 `isReplyInThread`**。
+
+| 写法 | 结果 |
+|---|---|
+| `rootId = parentId = 话题根` | 落进该话题（无引用气泡） |
+| `rootId = 话题根`、`parentId = 话题内任意消息` | 同上，服务端会解析到所属话题 |
+| 只给 `rootId`、不给 `parentId` | **新开一个话题**（不是回复） |
+| 两个都不给 | 新开一个话题 |
+| 再加 `isReplyInThread=true` | **HTTP 400 `replyInThread not support chat`** |
+
+`isReplyInThread` 只在普通群（chatMode=1）里有效，用来把一条消息挂成话题；THREAD_V2
+群里服务端直接拒绝。实测 `isThreadGroupTopic=true` 没有可见效果，开新话题靠"两个都不给"就够了。
+
+**`parentId` 在话题群里不渲染任何东西**（截图确认），它只是路由字段——所以不需要为了"引用"去区分。
+
+推送消息带 `thread_id`（话题首帖消息 id，THREAD_V2 下等于 `rootMessageId`）、`thread_position`
+（话题内相对位置，话题首帖是 -1）、`thread_reply_count`、`thread_message_type`（1=首帖 2=回复）。
+
+**读话题只能用 `thread.*`**：`thread.PullThreadsByPositionsRequest`（话题 position 稠密、可做游标）
+和 `thread.PullThreadMessagesByPositionsRequest`（话题内 thread_position 从 0 开始）。
+普通群调这两个网关回 400，调用前必须先判 `chatMode`。
+
+**会话对象上的 `lastMessagePosition` 在 THREAD_V2 群里永远不存在**（标已读后也不会补），
+所以按 position 平铺读消息没有锚点；话题群的正确读法是按话题。`lastThreadPosition` 有值，
+是话题总数的游标。转发（`PutTransmitMessageRequest`）没有 thread 字段，转发进不了话题。
 
 ## 消息资源：上传、key、下载
 

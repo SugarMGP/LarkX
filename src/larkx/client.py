@@ -186,7 +186,8 @@ class LarkClient:
         pkt = builders.wrap_packet(5, request, generate_long_request_id())
         return self._send_packet(pkt, packet_cid)
 
-    def send_rich_message(self, chat_id: str, blocks, cid: str = None, reply_to: str = None) -> str:
+    def send_rich_message(self, chat_id: str, blocks, cid: str = None, reply_to: str = None,
+                          thread_id: str = None) -> str:
         """发送富文本消息（type=2 POST）。
 
         blocks 是 connector 解析 markdown 后的 segment IR：块级 paragraph/heading/list/
@@ -195,7 +196,7 @@ class LarkClient:
         """
         packet_cid = cid or generate_request_cid()
         req = builders.build_rich_message_request(
-            str(chat_id), blocks, cid=packet_cid, reply_to=reply_to)
+            str(chat_id), blocks, cid=packet_cid, reply_to=reply_to, thread_id=thread_id)
         pkt = builders.wrap_packet(5, req, generate_long_request_id())
         return self._send_packet(pkt, packet_cid)
 
@@ -348,6 +349,55 @@ class LarkClient:
         response = self.api('messages.PullMessagesByIdsRequest',
                             {'messageIds': [str(i) for i in message_ids]})
         return dict((response or {}).get('messages') or {})
+
+    # ---------- 话题群（THREAD_V2） ----------
+
+    def pull_threads_by_positions(self, chat_id: str, positions, last_message_count: int = 1) -> dict:
+        """按话题 position 窗口取话题，返回原始响应：{threads, rootMessages, lastReplyMessages, ...}。
+
+        threads 以 position 为键；rootMessages/lastReplyMessages 以消息 id 为键。只在话题群
+        （chatMode=2/3）可用，普通群调它网关回 400。
+        """
+        response = self.api('thread.PullThreadsByPositionsRequest', {
+            'channelId': str(chat_id),
+            'type': 1,  # CHAT_CHANNEL
+            'positions': [int(p) for p in positions],
+            'direction': 3,  # DOWN
+            'onlyVisibleThreads': False,
+            'lastMessageCount': int(last_message_count),
+        })
+        return response or {}
+
+    def pull_threads_by_ids(self, thread_ids, last_message_count: int = 1) -> dict:
+        """按话题 id（= 话题首帖消息 id）批量取话题，返回结构同 pull_threads_by_positions。"""
+        ids = [str(t) for t in thread_ids if t]
+        if not ids:
+            return {}
+        response = self.api('thread.PullThreadsByIDsRequest',
+                            {'threadIds': ids, 'lastMessageCount': int(last_message_count)})
+        return response or {}
+
+    def pull_thread_messages_by_positions(self, thread_id: str, chat_id: str, positions) -> dict:
+        """取某个话题里的消息，返回 {thread_position: 消息}。
+
+        thread_position 是话题内的相对位置（0 开始），和消息的 position 不是一回事。
+        """
+        response = self.api('thread.PullThreadMessagesByPositionsRequest', {
+            'threadId': str(thread_id),
+            'channelId': str(chat_id),
+            'channelType': 1,  # CHAT_CHANNEL
+            'positions': [int(p) for p in positions],
+            'direction': 3,
+        })
+        return dict((response or {}).get('messages') or {})
+
+    def mark_threads_read(self, chat_id: str, thread_ids, read_position: int) -> dict:
+        """按话题标记已读，返回飞书真实响应。"""
+        return self.api('thread.PutReadThreadsRequest', {
+            'channelId': str(chat_id),
+            'threadIds': [str(t) for t in thread_ids if t],
+            'readPosition': int(read_position),
+        })
 
     def get_user_profile(self, user_id: str) -> dict | None:
         """单个用户资料（姓名、邮箱、英文名、部门）；查不到返回 None。"""

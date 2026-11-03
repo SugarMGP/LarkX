@@ -518,6 +518,9 @@ def decode_push_messages(raw: bytes):
             'channelId': message.channelId, 'chatType': message.chatType,
             'fromId': message.fromId, 'rootId': message.rootId,
             'threadId': message.threadId, 'parentId': message.parentId,
+            'threadPosition': message.threadPosition,
+            'threadReplyCount': message.threadReplyCount,
+            'threadMessageType': message.threadMessageType,
             'cid': message.cid, 'position': message.position,
             'createTime': message.createTime, 'content': message.content,
             'status': message.status, 'isRemoved': message.isRemoved,
@@ -527,7 +530,12 @@ def decode_push_messages(raw: bytes):
         flags = message_flags(v)
         summary, data = decode_message_content(message_type, v.get('content', b''))
         root_id = v.get('rootId') or ''
-        out.append({'msg_id': v.get('id'), 'msg_type': message_type, 'msg_type_name': MSG_TYPE_NAMES.get(message_type, str(message_type)), 'from_id': v.get('fromId'), 'chat_id': v.get('chatId') or v.get('channelId'), 'chat_type': chat_type, 'chat_type_name': CHAT_TYPE_NAMES.get(chat_type, str(chat_type)), 'at_me': bool(at_me_map.get(v.get('id')) or at_me_map.get(k)), 'root_id': root_id, 'parent_id': v.get('parentId') or '', 'cid': v.get('cid') or '', 'position': v.get('position'), 'create_time': v.get('createTime'), 'content': summary, 'content_data': data, **flags})
+        out.append({'msg_id': v.get('id'), 'msg_type': message_type, 'msg_type_name': MSG_TYPE_NAMES.get(message_type, str(message_type)), 'from_id': v.get('fromId'), 'chat_id': v.get('chatId') or v.get('channelId'), 'chat_type': chat_type, 'chat_type_name': CHAT_TYPE_NAMES.get(chat_type, str(chat_type)), 'at_me': bool(at_me_map.get(v.get('id')) or at_me_map.get(k)), 'root_id': root_id, 'parent_id': v.get('parentId') or '',
+                    # 话题：thread_id 是话题首帖的消息 id，thread_position 为 -1 表示这条就是话题首帖
+                    'thread_id': v.get('threadId') or '', 'thread_position': v.get('threadPosition') or 0,
+                    'thread_reply_count': v.get('threadReplyCount') or 0,
+                    'thread_message_type': enum_to_int(v.get('threadMessageType', 0)),
+                    'cid': v.get('cid') or '', 'position': v.get('position'), 'create_time': v.get('createTime'), 'content': summary, 'content_data': data, **flags})
     return out
 
 
