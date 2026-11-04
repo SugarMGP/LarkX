@@ -108,3 +108,43 @@ def test_mark_threads_read_uses_thread_request(monkeypatch):
     client.mark_threads_read("c1", ["t1", "t2"], 5)
     sent = payload_of(captured[0], P.thread.PutReadThreadsRequest)
     assert (sent.channelId, list(sent.threadIds), sent.readPosition) == ("c1", ["t1", "t2"], 5)
+
+
+def test_gateway_declares_a_client_version_new_enough_for_topic_chats(monkeypatch):
+    """群切到话题模式后，飞书按客户端版本门禁发帖；旧版本会被 400 拒绝。
+
+    实测 `5.7.0` 被拒、`7.20.0` 可用，而且只抬 x-web-version 不够——x-command-version
+    才是门禁依据。这条用例防的是有人把常量改回旧值。
+    """
+    from larkx import client as client_module
+
+    class Response:
+        content = b""
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    captured = {}
+
+    def fake_post(url, headers=None, cookies=None, data=None, timeout=None):
+        captured.update(headers or {})
+        return Response()
+
+    auth = SimpleNamespace(require_valid=lambda: None, app_key="k", user_id="u",
+                           gateway_app_id="app", cookies={},
+                           region=SimpleNamespace(gateway_url="https://example/gateway",
+                                                  web_origin="https://example"))
+    gateway = LarkClient(auth)
+    monkeypatch.setattr(gateway._session, "post", fake_post)
+
+    request = P.messages.PutMessageRequest(type=4, chatId="c1", cid="c1", version=1)
+    # 假响应没有消息体，发送结果必然解析失败；这条用例只关心请求头。
+    try:
+        gateway._send_packet(builders.wrap_packet(5, request, "req"), "c1")
+    except Exception:
+        pass
+
+    for name in ("x-command-version", "x-web-version"):
+        major = int(str(captured[name]).split(".")[0])
+        assert major >= 7, f"{name} 退回旧版本会让话题群的发送被网关 400 拒绝：{captured[name]}"

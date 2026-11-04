@@ -301,6 +301,21 @@ DOCS(22)
 推送消息带 `thread_id`（话题首帖消息 id，THREAD_V2 下等于 `rootMessageId`）、`thread_position`
 （话题内相对位置，话题首帖是 -1）、`thread_reply_count`、`thread_message_type`（1=首帖 2=回复）。
 
+**客户端版本头是发帖门禁（踩过的大坑）。** 群被切成话题模式后，旧版本客户端发帖会被直接拒绝：
+
+```
+HTTP 400  Unable to send chat messages as message type has been switched to topic.
+          Please update to the latest version to post or reply to topics.
+```
+
+响应体里只有这句话，没有任何字段级提示，所以看请求体永远找不到原因。实测：`x-command-version: 5.7.0`
+被拒，`7.20.0` 放行；**只抬 `x-web-version` 不够，`x-command-version` 才是门禁依据**，两个一起抬才通。
+常量在 `client.py` 的 `CLIENT_COMMAND_VERSION` / `CLIENT_WEB_VERSION`，别改回去。
+
+**识别话题模式要看两处**：`chatMode`=2/3（建群时选的话题群），以及
+`chatEntitySetting.chatDisplayModeSetting`=2（**普通群后来在设置里切成话题显示模式**，这种群
+`chatMode` 仍是 1）。这两类群的发帖门禁行为一致。
+
 **读话题只能用 `thread.*`**：`thread.PullThreadsByPositionsRequest`（话题 position 稠密、可做游标）
 和 `thread.PullThreadMessagesByPositionsRequest`（话题内 thread_position 从 0 开始）。
 普通群调这两个网关回 400，调用前必须先判 `chatMode`。

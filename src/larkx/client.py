@@ -5,6 +5,13 @@ import websockets
 from loguru import logger
 
 
+# 网关声明的客户端版本。飞书按它做能力门禁：群切成话题模式后，旧版本客户端发帖会被
+# 直接拒绝（HTTP 400 `Unable to send ... message type has been switched to topic`）。
+# 只有 x-web-version 不够，x-command-version 才是门禁依据。升级时两个一起改。
+CLIENT_COMMAND_VERSION = '7.20.0'
+CLIENT_WEB_VERSION = '7.20.0'
+
+
 class NetworkError(RuntimeError):
     pass
 
@@ -141,11 +148,16 @@ class LarkClient:
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36',
             'x-appid': self.auth.gateway_app_id,
             'x-command': str(packet.cmd),
-            'x-command-version': '5.7.0',
+            # 客户端版本号：飞书把群切成话题模式后会**拒绝旧版本客户端发帖**，回
+            # `Unable to send chat messages as message type has been switched to topic.
+            # Please update to the latest version to post or reply to topics.`
+            # （HTTP 400，响应体里只有这句话）。实测 5.7.0 被拒、7.20.0 放行；
+            # 只抬 x-web-version 不够，必须同时抬 x-command-version。
+            'x-command-version': CLIENT_COMMAND_VERSION,
             'x-lgw-os-type': '1',
             'x-lgw-terminal-type': '2',
             'x-source': 'web',
-            'x-web-version': '3.9.32',
+            'x-web-version': CLIENT_WEB_VERSION,
             'x-request-id': generate_long_request_id(),
         }
         try:
