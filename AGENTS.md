@@ -18,6 +18,7 @@
 | `space.py` | 云空间与云文档：JSON over HTTP，和 IM 网关**不是一套协议** |
 | `media.py` | 图片/文件上传（`upload_image`/`upload_file`）、消息资源下载（`open_message_resource`，流式） |
 | `proto/` | 协议资产：`lark_all_pb2.py`（消息定义）、`cmd_map.json`（命令号↔类型）、`gateway.py`（按名字解析命令） |
+| `proto/cards.py` | 卡片 JSON（schema 2.0 `newBody`、表格、列表、按钮、@、图片 key）→ 正文块与 facts |
 
 ## 两套协议，别混
 
@@ -352,7 +353,7 @@ HTTP 400  Unable to send chat messages as message type has been switched to topi
 |---|---|
 | 3/13 文件、15 视频 | `kind` `name` |
 | 7 语音、5 图片、10 表情 | `kind` |
-| 14 卡片 | `kind` `title` `subtitle` `theme` `description` `url` `action_url` `blocks`（标题取 cardHeader，新卡片取 jsonCard 的 `config.header`；`description` 只是飞书给的官方描述，**正文在 `blocks` 里**；`url` 只放内容里的链接，`action_url` 是卡片动作接口，别混） |
+| 14 卡片 | `kind` `title` `subtitle` `theme` `description` `url` `action_url` `blocks`（标题取 `jsonCard.header` / `config.header`，老卡片取 `cardHeader`；`description` 只是飞书给的官方描述，**正文在 `blocks` 里**；`url` 只放内容里的链接，`action_url` 是卡片动作接口，别混） |
 | 19 视频会议 | `kind` `topic` `start_ms` `end_ms` |
 | 20 位置 | `kind` `name` `description` |
 | 23 名片 | `kind` `name` `user_id`（域账号由下游按用户缓存补） |
@@ -365,7 +366,7 @@ HTTP 400  Unable to send chat messages as message type has been switched to topi
 
 ## 卡片消息（type=14）：能解析什么、怎么原样发
 
-飞书卡片在协议里有两套：`cardVersion=2` 的**老卡片**（`cardHeader` + `richtext` 块树）和**新卡片**（`jsonCard` 字段，整张卡片 JSON）。本租户机器人发的**全是老卡片**（实测某机器人会话 31 条消息里 12 条卡片，`jsonCard` 全为空）。
+飞书卡片在协议里有两套：`cardVersion=2` 的**老卡片**（`cardHeader` + `richtext` 块树）和**新卡片**（`jsonCard` 字段，整张卡片 JSON）。机器人身份过去发的全是老卡片（2026-10-27 某机器人会话 31 条卡片 `jsonCard` 全为空）；**真实账号的网页协议已经大量出现 schema 2.0 新卡片**，完整正文在 `jsonCard.newBody`，见下面「真实账号的新式卡片」。
 
 **老卡片的正文全在消息里**，结构是 `richtext.elements.dictionary` 的一棵树：
 
@@ -376,6 +377,17 @@ HTTP 400  Unable to send chat messages as message type has been switched to topi
 - 带 markdown 块的卡片，文本可能只有 `Upgrade to the latest app version to view the content` 这种**降级提示**（真正文不在消息里，客户端自己取）；纯文本块的卡片正文完整（实测一张招聘卡有 18 个文本节点 + 12 个按钮 + 2 张图）
 - **卡片封面图（cardHeader.icon）不在 attachments 里**：`media.message_attachments` 对 type=14 取的是 `card_blocks(content)`，只覆盖正文块树里的图片
 - `actionUrl`（`https://internal-api.feishu.cn/lark/card/api/actionv2`）是**卡片动作接口**，不是内容链接，别当卡片地址给下游
+
+### 真实账号的新式卡片（2026-11-13 实测）
+
+真实账号（网页协议，不是机器人 OpenAPI）拉到的卡片，`jsonCard` 是 **schema 2.0** 的完整 JSON：
+
+- 标题/副标题在 `jsonCard.header.property.title/subtitle`（不是 `config.header`）。
+- 完整正文在 **`jsonCard.newBody.property.elements`**；顶层 `jsonCard.body` 和 `richtext` 经常只是给旧客户端的**降级壳**（一张占位图 + `Upgrade to the latest app version to view the content`），不能当正文。
+- 表格在 `tag=table` 的 `property.columns/rows`；列表在 `tag=list` 的 `property.items`；按钮在 `tag=action` 的 `property.actions[]`，链接在 `actions[].action.url`；`tag=column_set/column/div/note/code_block/blockquote/heading` 也都带正文。
+- 卡片图片的 `imageID` 要通过 **`jsonAttachment.images`** 换成 `img_v2_…`/`img_v3_…` key；`@` 的展示名在 **`jsonAttachment.atUsers`**。
+- 网关请求要带 **`locale`**（`zh_CN`/`en_US`）；不带时同一张穷奇审批卡片会回 `Requester` / `Approval details` / `View Details` 英文原文。
+- 转发卡片的 `jsonCard` 同样带完整 `newBody`，不需要再点卡片动作接口。
 
 ### 大范围实测（2026-10-27：72 个会话 / 6242 条消息 / 258 张卡片）
 
@@ -406,9 +418,9 @@ HTTP 400  Unable to send chat messages as message type has been switched to topi
 
 - `decoders.card_blocks(content)`：把卡片正文按展示顺序拍平成块列表——`text`（带 `bold`/`italic`/`code`/`link`）、`image`（`key`/`size`）、`button`（`text`/`action_id`/`mode`）、`link`（`text`/`url`）、`at`、`divider`、`select`。容器块被展开；`group` 标出顶层块，调用方用它分段。
   - 老卡片（`cardHeader` + `richtext` 块树）按块树展开：`tag=1` 文本、`tag=2` 图片、`tag=5` @人、`tag=6` 链接（**文字在 `AnchorProperty.content` 里**）、`tag=11` 按钮、`tag=17` 整块链接、`tag=19` 下拉菜单（`placeHolder` + `options` + `confirm`）、`tag=32`/`tag=14`+`md_hr` 分隔线、`tag=7/8/9/30/31` 行内样式（加粗/斜体/下划线/代码，标记传给子文本）。
-  - 新版卡片（`jsonCard`，没有 `richtext`）按 `elements` 里的文字、按钮、图片拍平成块。
+  - 新版卡片：有 schema 2.0 `newBody` 时优先用它（表格/列表/按钮/@/代码/引用/分隔线都拍平）；没有 `newBody` 时 `body` / 顶层 `elements` 优先，只有它们退化成“升级客户端”降级壳时才回退 `richtext`。`imageID` 通过 `jsonAttachment.images` 换 key。
 - `decoders.message_facts(14, …)` 现在给卡片补了 `theme`、`blocks`、`action_url`，并且 **`url` 只放内容里的链接**（`actionUrl` 是卡片动作接口 `…/lark/card/api/actionv2`，不是给下游看的内容地址）；`description` 现在只是飞书给的官方描述（`cardDesc`），正文一律走 `blocks`。
-- `media.message_attachments` 支持 type=14：卡片正文在 `richtext`（**不是 `richText`，少个 h**），里面的图要算附件（key 形如 `img_v2_…`/`img_v3_…`，都能按 `download/messages/{message_id}/keys/{key}` 下载）。
+- `media.message_attachments` 支持 type=14：正文图（老卡片在 `richtext`，新卡片在 `jsonCard.newBody`）都要算附件（key 形如 `img_v2_…`/`img_v3_…`，都能按 `download/messages/{message_id}/keys/{key}` 下载）。
 - `LarkClient.forward_message(chat_ids, message_id, cid=None) -> str`：原样转发一条消息，返回新消息 id。`messages.PutTransmitMessageRequest` **必须带 `cids` map**（键=chat_id、值=cid，缺了网关回 400 `CIDs required`），响应里 `messages[chat_id].id` 是新消息 id。
 
 **原样发出去只有一条路：转发。**

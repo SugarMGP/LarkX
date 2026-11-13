@@ -1,6 +1,6 @@
-import json
-
 from protobuf_to_dict import protobuf_to_dict
+
+from . import cards as _cards
 
 TAG_PLACEHOLDERS = {2: '[图片]', 10: '[表情]', 18: '[视频]', 22: '[文档]'}
 # 富文本元素 tag -> 取文本内容的属性类（tag 见 entities.RichTextElement.Tag）
@@ -238,17 +238,38 @@ def _prop(prop: bytes, class_name: str, field: str):
     return getattr(obj, field, '') or ''
 
 
+def _card_fallback_blocks(blocks: list[dict]) -> bool:
+    """卡片块里的文字全部是“升级客户端”降级提示时，返回 True。"""
+    texts = [str(block.get('text') or '').lower() for block in blocks
+             if block.get('type') == 'text' and str(block.get('text') or '').strip()]
+    if not texts:
+        return False
+    return all('upgrade to the latest' in text or '请升级至最新' in text for text in texts)
+
+
 def card_blocks(content: dict) -> list[dict]:
     """把卡片正文按展示顺序拍平成块列表（原始值；markdown 由调用方拼）。
 
-    老卡片（cardHeader + richtext 块树）按块树展开；新版卡片（jsonCard）按 elements 里的
-    文字、按钮、图片拍平。块类型：text（带 bold/italic/code 标记）、image、button、link、
-    at、divider、select。group 标出顶层块，调用方用它分段。
+    老卡片（cardHeader + richtext 块树）按块树展开；新版卡片优先取 schema 2.0 的
+    jsonCard.newBody，没有完整 newBody 时再看 body/elements（退化成降级壳时回退 richtext）。
+    块类型：text（带 bold/italic/code 标记）、image、button、link、at、divider、select、
+    table、code、quote、list、heading 等。group 标出顶层块，调用方用它分段。
     """
-    rich = (content or {}).get('richtext') or {}
+    content = content or {}
+    # schema 2.0 的 newBody 是完整正文，必须压过 richtext 降级壳（占位图 + “升级客户端”）。
+    if _cards.has_full_json(content):
+        blocks = _cards.json_blocks(content)
+        if blocks:
+            return blocks
+    rich = content.get('richtext') or {}
     elements = (rich.get('elements') or {}).get('dictionary') or {}
+    json_blocks = _cards.json_blocks(content)
+    # 没有 newBody 的卡片里，jsonCard 的 body/elements 通常是完整正文；只有它退化到
+    # “升级客户端”降级壳时才用 richtext 块树，避免把占位壳当正文。
+    if elements and json_blocks and not _card_fallback_blocks(json_blocks):
+        return json_blocks
     if not elements:
-        return _json_card_blocks(_card_json(content or {}))
+        return json_blocks
     blocks: list[dict] = []
     seen: set[str] = set()
 
@@ -345,47 +366,6 @@ def card_blocks(content: dict) -> list[dict]:
     return blocks
 
 
-def _json_card_blocks(card: dict) -> list[dict]:
-    """新版卡片 JSON：把 elements 里的文字、按钮、图片按顺序拍平成块。"""
-    blocks: list[dict] = []
-
-    def text_of(node) -> str:
-        if isinstance(node, str):
-            return node
-        if not isinstance(node, dict):
-            return ''
-        for key in ('content', 'text', 'title', 'placeholder'):
-            value = node.get(key)
-            if isinstance(value, str) and value:
-                return value
-            if isinstance(value, dict):
-                found = text_of(value)
-                if found:
-                    return found
-        return ''
-
-    for index, element in enumerate(card.get('elements') or []):
-        if not isinstance(element, dict):
-            continue
-        group = f'json{index}'
-        tag = element.get('tag')
-        if tag == 'action':
-            for action in element.get('actions') or []:
-                if isinstance(action, dict):
-                    blocks.append({'type': 'button', 'text': text_of(action.get('text') or action),
-                                   'action_id': '', 'mode': str(action.get('type') or ''), 'group': group})
-            continue
-        if tag == 'img':
-            blocks.append({'type': 'image', 'key': str(element.get('img_key') or ''),
-                           'size': 0, 'group': group})
-            continue
-        text = text_of(element.get('text') or element.get('content') or element)
-        if text:
-            blocks.append({'type': 'text', 'text': text, 'bold': False, 'italic': False,
-                           'code': False, 'link': '', 'group': group})
-    return blocks
-
-
 def _select_text(prop: bytes) -> str:
     """下拉菜单：占位文字 + 选项 + 确认语。"""
     cls = getattr(_elements().entities.RichTextElement, 'SelectMenuProperty', None)
@@ -449,24 +429,6 @@ def _items_text(value) -> str:
         return value
     return " ".join(item["text"] for item in (value or {}).get("items", []) if item.get("text"))
 
-
-def _first_url(node) -> str:
-    """卡片 JSON 里的第一个 http 链接。"""
-    if isinstance(node, dict):
-        for key in ("url", "href", "link", "default_url", "pc_url", "ios_url", "android_url"):
-            value = node.get(key)
-            if isinstance(value, str) and value.startswith(("http://", "https://")):
-                return value
-        for value in node.values():
-            found = _first_url(value)
-            if found:
-                return found
-    elif isinstance(node, list):
-        for item in node:
-            found = _first_url(item)
-            if found:
-                return found
-    return ""
 
 
 # 消息类型 -> content 的 proto 类（文字和富文本特殊处理，见 decode_message_content）
@@ -579,22 +541,13 @@ def _message_facts(message_type: int, content: dict) -> dict:
                 "sticker_set_id": content.get("stickerSetId", ""),
                 "sticker_id": content.get("stickerId", "")}
     if message_type == 14:
-        header = content.get("cardHeader") or {}
-        card = _card_json(content)
+        data = _cards.facts(content)
+        # JSON 拍平失败或老卡片只有 richtext 时，用块树覆盖；标题/描述仍以 JSON 优先。
         blocks = card_blocks(content)
+        data["blocks"] = blocks
         link = next((b.get("url") for b in blocks if b.get("type") == "link" and b.get("url")), "")
-        if not link and card:
-            link = _first_url(card)
-        return {"kind": "卡片",
-                "title": header.get("title") or header.get("mainTitle") or _card_json_title(card),
-                "subtitle": header.get("subtitle") or _card_json_subtitle(card),
-                "theme": header.get("theme", ""),
-                # description 是飞书给的官方描述；正文在 blocks 里。
-                "description": content.get("cardDesc", ""),
-                # url 是内容里的链接；action_url 是卡片动作接口，不是给后端看的内容地址。
-                "url": link,
-                "action_url": content.get("actionUrl", ""),
-                "blocks": blocks}
+        data["url"] = link or _cards.first_url(_cards.card_json(content))
+        return data
     if message_type == 19:
         card = content.get("meetingCard") or {}
         return {"kind": "视频会议", "topic": card.get("topic", ""),
@@ -702,38 +655,3 @@ def parse_push_request(payload: bytes) -> dict:
     request = _messages().PushMessagesRequest()
     request.ParseFromString(payload)
     return protobuf_to_dict(request)
-
-
-def _card_json(content: dict) -> dict:
-    """卡片 JSON（新卡片的内容都在这，老卡片是 cardHeader）。"""
-    raw = content.get("jsonCard") or ""
-    try:
-        data = json.loads(raw)
-    except (ValueError, TypeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _as_dict(value) -> dict:
-    """只当字典用；卡片 JSON 是发送方可控的，类型不对就当没有。"""
-    return value if isinstance(value, dict) else {}
-
-
-def _card_json_title(card: dict) -> str:
-    """卡片 JSON 里的标题（新卡片没有 cardHeader，标题在 config.header.title 里）。"""
-    header = _as_dict(_as_dict(card.get("config")).get("header"))
-    title = header.get("title") or ""
-    if isinstance(title, str):
-        return title
-    title = _as_dict(title)
-    return title.get("content") or title.get("title") or ""
-
-
-def _card_json_subtitle(card: dict) -> str:
-    """卡片 JSON 里的副标题。"""
-    header = _as_dict(_as_dict(card.get("config")).get("header"))
-    subtitle = header.get("subtitle") or ""
-    if isinstance(subtitle, str):
-        return subtitle
-    subtitle = _as_dict(subtitle)
-    return subtitle.get("content") or subtitle.get("subtitle") or ""

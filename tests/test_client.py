@@ -18,6 +18,30 @@ def make_client(monkeypatch, reply=P.improto.Packet().SerializeToString()):
     return c
 
 
+def test_gateway_headers_carry_region_locale(monkeypatch):
+    """网页端每个网关请求带 locale，否则卡片会回英文原文。"""
+    auth = SimpleNamespace(require_valid=lambda: None, app_key="k", user_id="u",
+                           region=SimpleNamespace(locale="zh_CN", web_origin="https://x",
+                                                  gateway_url="https://gateway"),
+                           gateway_app_id="app", cookies={})
+    c = LarkClient(auth)
+    seen = {}
+
+    class Response:
+        content = b""
+
+        def raise_for_status(self):
+            return None
+
+    def post(url, headers=None, cookies=None, data=None, timeout=None):
+        seen.update(headers or {})
+        return Response()
+
+    monkeypatch.setattr(c._session, "post", post)
+    c._gateway_post(P.improto.Packet())
+    assert seen["locale"] == "zh_CN"
+
+
 def test_send_packet_only_supports_quoted_reply():
     req = parsed(builders.build_send_message_packet("hi", "c1", "req", reply_to="q1", cid="fixed"))
     assert (req.rootId, req.parentId, req.cid, req.isReplyInThread) == ("q1", "q1", "fixed", False)

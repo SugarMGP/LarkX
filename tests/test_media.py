@@ -536,6 +536,78 @@ def test_new_style_card_body_is_kept_as_text_blocks():
     assert facts["blocks"][1]["text"] == "去学习"
 
 
+def test_schema2_card_new_body_wins_and_keeps_tables_and_images():
+    """schema 2.0：完整正文在 newBody，顶层 body/richtext 只是降级壳。"""
+    from larkx.proto import lark_all_pb2 as L
+    card = L.entities.CardContent()
+    card.jsonCard = json.dumps({
+        "header": {"property": {
+            "title": {"tag": "plain_text", "property": {"content": "完整卡片"}},
+            "subtitle": {"tag": "plain_text", "property": {"content": "副标题"}},
+        }},
+        "newBody": {"tag": "body", "property": {"elements": [
+            {"tag": "markdown", "property": {"content": "正文"}},
+            {"tag": "table", "property": {
+                "columns": [{"name": "c", "displayName": "列"}],
+                "rows": [{"c": {"data": "a|b"}}],
+            }},
+            {"tag": "img", "property": {"imageID": "24",
+                                        "alt": {"tag": "plain_text", "property": {"content": "图"}}}},
+            {"tag": "action", "property": {"actions": [
+                {"tag": "button", "type": "open_url",
+                 "text": {"tag": "plain_text", "property": {"content": "详情"}},
+                 "action": {"type": "open_url", "url": "https://example.com/x"}},
+            ]}},
+        ]}},
+        "body": {"property": {"elements": [
+            {"tag": "markdown", "property": {"content": "请升级客户端"}},
+        ]}},
+    }, ensure_ascii=False)
+    card.jsonAttachment.images["24"].token = "img_v3_card"
+    content = protobuf_to_dict(card)
+    facts = decoders.message_facts(14, content)
+    assert (facts["title"], facts["subtitle"]) == ("完整卡片", "副标题")
+    assert [b["type"] for b in facts["blocks"]] == ["text", "table", "image", "button"]
+    assert facts["blocks"][0]["text"] == "正文"
+    assert facts["blocks"][1]["rows"][0][0] == "a|b"
+    assert facts["blocks"][2]["key"] == "img_v3_card"
+    assert facts["blocks"][2]["alt"] == "图"
+    assert facts["blocks"][3]["text"] == "详情"
+    assert facts["blocks"][3]["url"] == "https://example.com/x"
+    assert "请升级客户端" not in str(facts["blocks"])
+    assert media.message_attachments(14, content) == [
+        {"kind": "image", "key": "img_v3_card", "name": "", "size": 0}]
+
+
+def test_card_blocks_choose_json_body_unless_it_is_an_upgrade_shell():
+    """没有 newBody 时：JSON body 完整就用它；只是“升级客户端”壳才回退 richtext。"""
+    from larkx.proto import lark_all_pb2 as L
+    text = L.entities.RichTextElement.TextProperty(content="富文本正文")
+    rich = {"elementIds": ["1"], "elements": {"dictionary": {
+        "1": {"tag": 1, "property": text.SerializeToString()},
+    }}}
+    shell = {"jsonCard": json.dumps({"body": {"property": {"elements": [
+        {"tag": "markdown", "property": {"content": "请升级至最新客户端，以查看内容"}},
+    ]}}})}
+    shell["richtext"] = rich
+    assert decoders.card_blocks(shell)[0]["text"] == "富文本正文"
+
+    full = {"jsonCard": json.dumps({"body": {"property": {"elements": [
+        {"tag": "markdown", "property": {"content": "JSON 正文"}},
+    ]}}})}
+    full["richtext"] = rich
+    assert decoders.card_blocks(full)[0]["text"] == "JSON 正文"
+
+
+def test_card_json_accepts_openapi_wrapper():
+    """兼容 OpenAPI raw_card_content 的 {"json_card": "<card>"} 外层包装。"""
+    inner = {"elements": [{"tag": "markdown", "content": "包装里的正文"}]}
+    content = {"jsonCard": json.dumps({"json_card": json.dumps(inner, ensure_ascii=False)},
+                                     ensure_ascii=False)}
+    facts = decoders.message_facts(14, content)
+    assert facts["blocks"][0]["text"] == "包装里的正文"
+
+
 def test_system_message_fills_the_template():
     facts = decoders.message_facts(6, {
         "messageTemplate": "{to_chatters} joined the group via a QR Code shared by {from_user}.",

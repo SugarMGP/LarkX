@@ -160,6 +160,11 @@ class LarkClient:
             'x-web-version': CLIENT_WEB_VERSION,
             'x-request-id': generate_long_request_id(),
         }
+        # 网页端每个网关请求都带 locale；不带时卡片 JSON 会回英文原文
+        # （穷奇审批卡片实测：Requester / Approval details / View Details）。
+        locale = getattr(getattr(self.auth, 'region', None), 'locale', '')
+        if locale:
+            headers['locale'] = locale
         try:
             resp = self._session.post(self.auth.region.gateway_url, headers=headers, cookies=self.auth.cookies,
                                       data=packet.SerializeToString(), timeout=15)
