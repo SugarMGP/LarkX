@@ -388,6 +388,7 @@ HTTP 400  Unable to send chat messages as message type has been switched to topi
 - 卡片图片的 `imageID` 要通过 **`jsonAttachment.images`** 换成 `img_v2_…`/`img_v3_…` key；`@` 的展示名在 **`jsonAttachment.atUsers`**。
 - 网关请求要带 **`locale`**（`zh_CN`/`en_US`）；不带时同一张穷奇审批卡片会回 `Requester` / `Approval details` / `View Details` 英文原文。
 - 转发卡片的 `jsonCard` 同样带完整 `newBody`，不需要再点卡片动作接口。
+- **外部群/转发卡片可能只更新 feed，不进 WS**：真实账号实测外部号转发的卡片在 `feed.PullFeedCardsRequest` 的 `messages` 里有完整内容，但 WS 的 `cmd=6/8320/1002/1603` 都没有；调用方不能只依赖 `connect_websocket`，要按 `chats.lastMessagePosition` 拉 `pull_messages_by_positions` 补齐。
 
 ### 大范围实测（2026-10-27：72 个会话 / 6242 条消息 / 258 张卡片）
 
