@@ -299,8 +299,7 @@ DOCS(22)
 
 **`parentId` 在话题群里不渲染任何东西**（截图确认），它只是路由字段——所以不需要为了"引用"去区分。
 
-推送消息带 `from_type`（发送人类型枚举：1=真人 2=机器人 0=未知；**真实机器人消息实测也可能给 1，不能单靠它判断**，调用方要按会话成员 `type=2` 纠正）、
-`thread_id`（话题首帖消息 id，THREAD_V2 下等于 `rootMessageId`）、`thread_position`
+推送消息带 `thread_id`（话题首帖消息 id，THREAD_V2 下等于 `rootMessageId`）、`thread_position`
 （话题内相对位置，话题首帖是 -1）、`thread_reply_count`、`thread_message_type`（1=首帖 2=回复）。
 
 **客户端版本头是发帖门禁（踩过的大坑）。** 群被切成话题模式后，旧版本客户端发帖会被直接拒绝：

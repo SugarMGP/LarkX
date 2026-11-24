@@ -490,7 +490,7 @@ def decode_push_messages(raw: bytes):
         v = {
             'id': message.id, 'type': message.type, 'chatId': message.chatId,
             'channelId': message.channelId, 'chatType': message.chatType,
-            'fromId': message.fromId, 'fromType': message.fromType, 'rootId': message.rootId,
+            'fromId': message.fromId, 'rootId': message.rootId,
             'threadId': message.threadId, 'parentId': message.parentId,
             'threadPosition': message.threadPosition,
             'threadReplyCount': message.threadReplyCount,
@@ -506,8 +506,6 @@ def decode_push_messages(raw: bytes):
         root_id = v.get('rootId') or ''
         out.append({'msg_id': v.get('id'), 'msg_type': message_type, 'msg_type_name': MSG_TYPE_NAMES.get(message_type, str(message_type)), 'from_id': v.get('fromId'), 'chat_id': v.get('chatId') or v.get('channelId'), 'chat_type': chat_type, 'chat_type_name': CHAT_TYPE_NAMES.get(chat_type, str(chat_type)), 'at_me': bool(at_me_map.get(v.get('id')) or at_me_map.get(k)), 'root_id': root_id, 'parent_id': v.get('parentId') or '',
                     # 话题：thread_id 是话题首帖的消息 id，thread_position 为 -1 表示这条就是话题首帖
-                    # 发送人类型：1=真人 2=机器人 0=未知；群聊/单聊/话题都按消息本身给。
-                    'from_type': enum_to_int(v.get('fromType', 0)),
                     'thread_id': v.get('threadId') or '', 'thread_position': v.get('threadPosition') or 0,
                     'thread_reply_count': v.get('threadReplyCount') or 0,
                     'thread_message_type': enum_to_int(v.get('threadMessageType', 0)),

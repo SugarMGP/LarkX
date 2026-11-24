@@ -36,7 +36,6 @@ def payload_of(packet, cls):
 def test_push_message_exposes_topic_fields():
     message = P.entities.Message(
         id="m1", type=4, chatId="c1", chatType=2, fromId="u2",
-        fromType=P.entities.Message.BOT,
         rootId="", threadId="t1", threadPosition=0,
         threadReplyCount=3, threadMessageType=P.entities.Message.THREAD_REPLY_MESSAGE,
     )
@@ -49,7 +48,6 @@ def test_push_message_exposes_topic_fields():
     decoded = decoders.decode_push_messages(builders.wrap_frame(packet))
 
     assert len(decoded) == 1
-    assert decoded[0]["from_type"] == 2
     assert decoded[0]["thread_id"] == "t1"
     assert decoded[0]["thread_position"] == 0
     assert decoded[0]["thread_reply_count"] == 3
